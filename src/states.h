@@ -18,6 +18,7 @@ enum class LightState : uint8_t {
     REVERSE    = 4,  // white — reverse
     BRAKE_TURN = 5,  // brake + turn active on the same side
     HAZARD     = 6,  // both sides turning simultaneously (amber blink)
+    CUSTOM     = 7,  // CAN-commanded custom animation (see can_protocol.h Cmd 0x04)
 };
 
 // ---------------------------------------------------------------------------

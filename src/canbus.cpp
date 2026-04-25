@@ -1,34 +1,14 @@
-// ---------------------------------------------------------------------------
+﻿// ---------------------------------------------------------------------------
 // canbus.cpp
 // MCP2515 SPI CAN bus interface.
 // ---------------------------------------------------------------------------
 
 #include "canbus.h"
 
-// ---------------------------------------------------------------------------
-// State broadcast payload layout (CAN_ID_STATE_BROADCAST, 0x100)
-// ─────────────────────────────────────────────────────────────────
-//  Byte 0 : left  LightState  (enum value 0-6)
-//  Byte 1 : right LightState  (enum value 0-6)
-//  Byte 2 : left  raw flags   bit0=brake  bit1=running  bit2=turn  bit3=reverse
-//  Byte 3 : right raw flags   bit0=brake  bit1=running  bit2=turn  bit3=reverse
-//  Byte 4 : current brightness (0-255)
-//  Byte 5 : die temperature °C (0-255, clamped)
-//  Byte 6 : thermal derate amount (0=none, 255=max)
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Command frame layout (CAN_ID_COMMAND, 0x101)
-// ─────────────────────────────────────────────
-//  Byte 0 : command
-//    0x01  Set brightness   — byte 1 = brightness (0-255)
-//    0x02  Animation override — byte 1 = left LightState, byte 2 = right LightState
-//    0x03  Clear override
-// ---------------------------------------------------------------------------
-
 static constexpr uint8_t CMD_SET_BRIGHTNESS = 0x01;
 static constexpr uint8_t CMD_ANIM_OVERRIDE  = 0x02;
 static constexpr uint8_t CMD_CLEAR_OVERRIDE = 0x03;
+static constexpr uint8_t CMD_CUSTOM_ANIM    = 0x04;
 
 // ---------------------------------------------------------------------------
 bool CANBus::begin() {
@@ -68,7 +48,7 @@ bool CANBus::_initMCP() {
 }
 
 // ---------------------------------------------------------------------------
-void CANBus::tick(LightState leftState, LightState rightState,
+void CANBus::tick(LightState driverState, LightState passengerState,
                   const Inputs& inputs, const ThermalManager& thermal) {
     // ── Bus-off detection and recovery ───────────────────────────────────────────
     // EFLG bit5 = TXBO (transmit bus-off).  This happens when the TX error
@@ -98,7 +78,7 @@ void CANBus::tick(LightState leftState, LightState rightState,
     unsigned long nowMs = millis();
     if (nowMs - _lastBroadcastMs >= CAN_BROADCAST_INTERVAL_MS) {
         _lastBroadcastMs = nowMs;
-        _sendState(leftState, rightState, inputs, thermal);
+        _sendState(driverState, passengerState, inputs, thermal);
     }
 
     // ── RX: drain all pending frames ────────────────────────────────────────
@@ -109,26 +89,26 @@ void CANBus::tick(LightState leftState, LightState rightState,
 }
 
 // ---------------------------------------------------------------------------
-void CANBus::_sendState(LightState leftState, LightState rightState,
+void CANBus::_sendState(LightState driverState, LightState passengerState,
                         const Inputs& inputs, const ThermalManager& thermal) {
     struct can_frame frame;
     frame.can_id  = CAN_ID_STATE_BROADCAST;
     frame.can_dlc = 7;
 
-    frame.data[0] = static_cast<uint8_t>(leftState);
-    frame.data[1] = static_cast<uint8_t>(rightState);
+    frame.data[0] = static_cast<uint8_t>(driverState);
+    frame.data[1] = static_cast<uint8_t>(passengerState);
 
     // Left raw flags
-    frame.data[2] = (inputs.leftBrake()   ? 0x01 : 0)
-                  | (inputs.leftRunning() ? 0x02 : 0)
-                  | (inputs.leftTurn()    ? 0x04 : 0)
-                  | (inputs.leftReverse() ? 0x08 : 0);
+    frame.data[2] = (inputs.driverBrake()   ? 0x01 : 0)
+                  | (inputs.driverRunning() ? 0x02 : 0)
+                  | (inputs.driverTurn()    ? 0x04 : 0)
+                  | (inputs.driverReverse() ? 0x08 : 0);
 
     // Right raw flags
-    frame.data[3] = (inputs.rightBrake()   ? 0x01 : 0)
-                  | (inputs.rightRunning() ? 0x02 : 0)
-                  | (inputs.rightTurn()    ? 0x04 : 0)
-                  | (inputs.rightReverse() ? 0x08 : 0);
+    frame.data[3] = (inputs.passengerBrake()   ? 0x01 : 0)
+                  | (inputs.passengerRunning() ? 0x02 : 0)
+                  | (inputs.passengerTurn()    ? 0x04 : 0)
+                  | (inputs.passengerReverse() ? 0x08 : 0);
 
     frame.data[4] = _brightness;
     // Byte 5: die temperature in °C, clamped to 0-255
@@ -139,6 +119,29 @@ void CANBus::_sendState(LightState leftState, LightState rightState,
 
     if (_mcp.sendMessage(&frame) != MCP2515::ERROR_OK) {
         Serial.println(F("[CAN] TX error"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+void CANBus::reportFault(uint8_t code, uint8_t severity,
+                         uint8_t data0, uint8_t data1) {
+    // Always log to Serial regardless of bus state
+    Serial.printf("[FAULT] code=0x%02X sev=%u d0=%u d1=%u\n",
+                  code, severity, data0, data1);
+
+    if (!_online) return;  // bus offline — can't transmit
+
+    struct can_frame frame;
+    frame.can_id  = CAN_ID_FAULT;
+    frame.can_dlc = 4;
+    frame.data[0] = code;
+    frame.data[1] = severity;
+    frame.data[2] = data0;
+    frame.data[3] = data1;
+
+    if (_mcp.sendMessage(&frame) != MCP2515::ERROR_OK) {
+        Serial.println(F("[CAN] fault frame TX error"));
     }
 }
 
@@ -164,12 +167,12 @@ void CANBus::_processFrame(const struct can_frame& frame) {
                 uint8_t r = frame.data[2];
                 if (l > 6) l = 0;
                 if (r > 6) r = 0;
-                _overrideLeft  = static_cast<LightState>(l);
-                _overrideRight = static_cast<LightState>(r);
+                _overrideDriver  = static_cast<LightState>(l);
+                _overridePassenger = static_cast<LightState>(r);
                 _hasOverride   = true;
-                Serial.print(F("[CAN] anim override left="));
+                Serial.print(F("[CAN] anim override driver="));
                 Serial.print(l);
-                Serial.print(F(" right="));
+                Serial.print(F(" passenger="));
                 Serial.println(r);
             }
             break;
@@ -177,6 +180,63 @@ void CANBus::_processFrame(const struct can_frame& frame) {
         case CMD_CLEAR_OVERRIDE:
             _hasOverride = false;
             Serial.println(F("[CAN] override cleared"));
+            break;
+
+        case CMD_CUSTOM_ANIM:
+            // Byte 1 : CANIM_* animation ID
+            // Byte 2-3 : duration ms (big-endian; 0 = animation's built-in default)
+            // Byte 4 : param0   Byte 5 : param1
+            if (frame.can_dlc >= 6) {
+                uint8_t  animId   = frame.data[1];
+                uint16_t durMs    = ((uint16_t)frame.data[2] << 8) | frame.data[3];
+                uint8_t  param0   = frame.data[4];
+                uint8_t  param1   = frame.data[5];
+
+                Serial.printf("[CAN] custom anim id=0x%02X dur=%u p0=%u p1=%u\n",
+                              animId, durMs, param0, param1);
+
+                switch (animId) {
+
+                    case CANIM_SCROLL_BRAKE_CHECK:
+                        AnimationRegistry::scrollText().set(
+                            "BRAKE CHECK",
+                            CRGB(220, 220, 220),
+                            CRGB(30, 0, 0),
+                            (durMs > 0) ? (int)durMs : 45);
+                        AnimationRegistry::setCustomSlot(
+                            AnimationRegistry::CustomSlot::SCROLL_TEXT);
+                        _hasCustomAnim = true;
+                        break;
+
+                    case CANIM_FLASH_AMBER:
+                        AnimationRegistry::flash().set(
+                            (param0 > 0) ? param0 : 3,
+                            (param1 > 0) ? (uint16_t)(param1) : 150,
+                            CRGB(255, 140, 0));
+                        AnimationRegistry::setCustomSlot(
+                            AnimationRegistry::CustomSlot::FLASH);
+                        _hasCustomAnim = true;
+                        break;
+
+                    case CANIM_SCROLL_2CHAR: {
+                        // param0 and param1 are two ASCII characters
+                        char buf[3] = { (char)param0, (char)param1, '\0' };
+                        AnimationRegistry::scrollText().set(
+                            buf,
+                            CRGB(220, 220, 220),
+                            CRGB(30, 0, 0),
+                            (durMs > 0) ? (int)durMs : 45);
+                        AnimationRegistry::setCustomSlot(
+                            AnimationRegistry::CustomSlot::SCROLL_TEXT);
+                        _hasCustomAnim = true;
+                        break;
+                    }
+
+                    default:
+                        Serial.printf("[CAN] unknown custom anim id 0x%02X\n", animId);
+                        break;
+                }
+            }
             break;
 
         default:

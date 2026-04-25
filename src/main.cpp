@@ -1,4 +1,4 @@
-// ---------------------------------------------------------------------------
+﻿// ---------------------------------------------------------------------------
 // main.cpp
 // ESP32-S3 Custom Foxbody Mustang Taillight Controller
 //
@@ -9,8 +9,8 @@
 //      Seg 1 — SEG_BOT_STRIP : 21 cols × 5  rows = 105 LEDs
 //      Seg 2 — SEG_MAIN      : 17 cols × 10 rows = 170 LEDs
 //      Total per side: 380 LEDs
-//      – Left  taillight → GPIO PIN_LED_LEFT  (20)
-//      – Right taillight → GPIO PIN_LED_RIGHT (19)
+//      – Left  taillight → GPIO PIN_LED_DRIVER  (20)
+//      – Right taillight → GPIO PIN_LED_PASSENGER (19)
 //  • 4-channel optocoupler (stock 12 V → 3.3 V isolation)
 //      – CH1 Left turn   → GPIO PIN_OPT_LEFT_TURN  (4)
 //      – CH2 Right turn  → GPIO PIN_OPT_RIGHT_TURN (5)
@@ -26,6 +26,7 @@
 #include <Arduino.h>
 #include <FastLED.h>
 #include <Preferences.h>
+#include <WiFi.h>
 #include <esp_idf_version.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h>
@@ -39,23 +40,30 @@
 #include "animations.h"
 #include "canbus.h"
 #include "thermal.h"
-#include "voltage_monitor.h"
+#include "font5x.h"
+#include "faults.h"
 
 // ── Pixel buffers (owned by main, shared with TailLight objects) ─────────────
-CRGB ledsLeft [LEDS_PER_SIDE];
-CRGB ledsRight[LEDS_PER_SIDE];
+CRGB ledsDriver [LEDS_PER_SIDE];
+CRGB ledsPassenger[LEDS_PER_SIDE];
 
 // ── Subsystem objects ────────────────────────────────────────────────────────
 Inputs    inputs;
-TailLight leftPanel (ledsLeft,  true);
-TailLight rightPanel(ledsRight, false);
+TailLight driverPanel (ledsDriver,  true);
+TailLight passengerPanel(ledsPassenger, false);
 CANBus         canBus;
 ThermalManager thermal;
-VoltageMonitor voltMon;
 
 // ── Timing ───────────────────────────────────────────────────────────────────
-static unsigned long lastFrameMs  = 0;
-static bool          vmonWasReady = true;  // tracks UVLO transition for one-shot blank
+static unsigned long lastFrameMs = 0;
+
+// ── Boot-fault state (set in logAndCountReset, reported after CAN is up) ───────
+static esp_reset_reason_t g_bootReason       = ESP_RST_UNKNOWN;
+static uint32_t           g_bootFaultCount   = 0;
+
+// Stuck input flags saved by st_checkInputPins() before CAN is initialised
+static uint8_t g_stuckDriver  = 0;  // bit0=brake bit1=running bit2=turn bit3=reverse
+static uint8_t g_stuckPassenger = 0;
 
 // ===========================================================================
 // NVS fault counter + boot reason logging
@@ -75,27 +83,29 @@ static void logAndCountReset() {
             uint32_t n = prefs.getUInt("wdt", 0) + 1;
             prefs.putUInt("wdt", n);
             Serial.printf("  [FAULT] WDT reset — count now %u\n", n);
+            g_bootFaultCount = n;
             break;
         }
         case ESP_RST_PANIC: {
             uint32_t n = prefs.getUInt("panic", 0) + 1;
             prefs.putUInt("panic", n);
-            Serial.printf("  [FAULT] Panic reset — count now %u\n", n);
+            Serial.printf("  [FAULT] Panic reset \u2014 count now %u\n", n);
+            g_bootFaultCount = n;
             break;
         }
         case ESP_RST_BROWNOUT: {
             uint32_t n = prefs.getUInt("brownout", 0) + 1;
             prefs.putUInt("brownout", n);
-            Serial.printf("  [FAULT] Brownout reset — count now %u\n", n);
+            Serial.printf("  [FAULT] Brownout reset \u2014 count now %u\n", n);
+            g_bootFaultCount = n;
             break;
         }
         case ESP_RST_POWERON:
-        case ESP_RST_SW: {
-            uint32_t n = prefs.getUInt("poweron", 0) + 1;
-            prefs.putUInt("poweron", n);
-            // Normal boot — no fault message
+        case ESP_RST_SW:
+            // Normal boot — no fault, no NVS write needed.
+            // (Writing a counter on every power-on would wear flash with no
+            // safety benefit; fault resets above are worth persisting.)
             break;
-        }
         default:
             break;
     }
@@ -122,6 +132,8 @@ static void logAndCountReset() {
     Serial.printf("  This boot  — reason: %s\n", reasonStr);
 
     prefs.end();
+
+    g_bootReason = reason;  // save for CAN fault broadcast after canBus.begin()
 }
 
 // ---------------------------------------------------------------------------
@@ -131,8 +143,8 @@ static void logAndCountReset() {
 // may not execute reliably in a degraded system state.
 // ---------------------------------------------------------------------------
 static void onSystemShutdown() {
-    fill_solid(ledsLeft,  LEDS_PER_SIDE, CRGB::Black);
-    fill_solid(ledsRight, LEDS_PER_SIDE, CRGB::Black);
+    fill_solid(ledsDriver,  LEDS_PER_SIDE, CRGB::Black);
+    fill_solid(ledsPassenger, LEDS_PER_SIDE, CRGB::Black);
     FastLED.show();
 }
 
@@ -150,8 +162,8 @@ static void st_printConfig() {
     Serial.println(F("========================================="));
     Serial.print(F("  FW build       : ")); Serial.println(F(__DATE__ " " __TIME__));
     Serial.println(F("  --- LED outputs ---"));
-    Serial.print(F("  Left  DIN      : GPIO")); Serial.println(PIN_LED_LEFT);
-    Serial.print(F("  Right DIN      : GPIO")); Serial.println(PIN_LED_RIGHT);
+    Serial.print(F("  Left  DIN      : GPIO")); Serial.println(PIN_LED_DRIVER);
+    Serial.print(F("  Right DIN      : GPIO")); Serial.println(PIN_LED_PASSENGER);
     Serial.print(F("  LEDs per side  : ")); Serial.println(LEDS_PER_SIDE);
     Serial.print(F("  SEG_TOP_STRIP  : ")); Serial.print(STRIP_COLS);
     Serial.print(F(" cols x "));            Serial.print(STRIP_ROWS);
@@ -166,15 +178,15 @@ static void st_printConfig() {
     Serial.print(1000UL / FRAME_INTERVAL_MS); Serial.println(F(" fps"));
     Serial.println(F("  --- Inputs (active-LOW via optocouplers) ---"));
     Serial.println(F("  Left opto:"));
-    Serial.print(F("    Brake        : GPIO")); Serial.println(PIN_LEFT_BRAKE);
-    Serial.print(F("    Running      : GPIO")); Serial.println(PIN_LEFT_RUNNING);
-    Serial.print(F("    Turn         : GPIO")); Serial.println(PIN_LEFT_TURN);
-    Serial.print(F("    Reverse      : GPIO")); Serial.println(PIN_LEFT_REVERSE);
+    Serial.print(F("    Brake        : GPIO")); Serial.println(PIN_DRIVER_BRAKE);
+    Serial.print(F("    Running      : GPIO")); Serial.println(PIN_DRIVER_RUNNING);
+    Serial.print(F("    Turn         : GPIO")); Serial.println(PIN_DRIVER_TURN);
+    Serial.print(F("    Reverse      : GPIO")); Serial.println(PIN_DRIVER_REVERSE);
     Serial.println(F("  Right opto:"));
-    Serial.print(F("    Brake        : GPIO")); Serial.println(PIN_RIGHT_BRAKE);
-    Serial.print(F("    Running      : GPIO")); Serial.println(PIN_RIGHT_RUNNING);
-    Serial.print(F("    Turn         : GPIO")); Serial.println(PIN_RIGHT_TURN);
-    Serial.print(F("    Reverse      : GPIO")); Serial.println(PIN_RIGHT_REVERSE);
+    Serial.print(F("    Brake        : GPIO")); Serial.println(PIN_PASSENGER_BRAKE);
+    Serial.print(F("    Running      : GPIO")); Serial.println(PIN_PASSENGER_RUNNING);
+    Serial.print(F("    Turn         : GPIO")); Serial.println(PIN_PASSENGER_TURN);
+    Serial.print(F("    Reverse      : GPIO")); Serial.println(PIN_PASSENGER_REVERSE);
     Serial.println(F("========================================="));
 }
 
@@ -185,8 +197,8 @@ static void st_printConfig() {
 // Returns true if all inputs are idle.
 // ---------------------------------------------------------------------------
 static bool st_checkInputPins() {
-    const int   pins[8]  = { PIN_LEFT_BRAKE,  PIN_LEFT_RUNNING,  PIN_LEFT_TURN,  PIN_LEFT_REVERSE,
-                              PIN_RIGHT_BRAKE, PIN_RIGHT_RUNNING, PIN_RIGHT_TURN, PIN_RIGHT_REVERSE };
+    const int   pins[8]  = { PIN_DRIVER_BRAKE,  PIN_DRIVER_RUNNING,  PIN_DRIVER_TURN,  PIN_DRIVER_REVERSE,
+                              PIN_PASSENGER_BRAKE, PIN_PASSENGER_RUNNING, PIN_PASSENGER_TURN, PIN_PASSENGER_REVERSE };
     const char* names[8] = { "L-BRAKE", "L-RUN", "L-TURN", "L-REV",
                               "R-BRAKE", "R-RUN", "R-TURN", "R-REV" };
     bool allOk = true;
@@ -196,8 +208,9 @@ static bool st_checkInputPins() {
         if (active) {
             Serial.print(F("  [WARN] ")); Serial.print(names[i]);
             Serial.println(F(" is ACTIVE at boot — check wiring"));
-            allOk = false;
-        } else {
+            allOk = false;            // Save in the boot-fault globals so we can report over CAN later
+            if (i < 4) g_stuckDriver  |= (1 << i);
+            else        g_stuckPassenger |= (1 << (i - 4));        } else {
             Serial.print(F("  [OK]   ")); Serial.print(names[i]);
             Serial.println(F(" idle"));
         }
@@ -213,14 +226,14 @@ static void st_flashSegment(int seg, CRGB colour, uint32_t holdMs) {
     int count = (seg == SEG_MAIN) ? MAIN_LEDS : STRIP_LEDS;
     int base  = SEG_OFFSET[seg];
     for (int i = base; i < base + count; i++) {
-        ledsLeft[i]  = colour;
-        ledsRight[i] = colour;
+        ledsDriver[i]  = colour;
+        ledsPassenger[i] = colour;
     }
     FastLED.show();
     delay(holdMs);
     for (int i = base; i < base + count; i++) {
-        ledsLeft[i]  = CRGB::Black;
-        ledsRight[i] = CRGB::Black;
+        ledsDriver[i]  = CRGB::Black;
+        ledsPassenger[i] = CRGB::Black;
     }
     FastLED.show();
     delay(100);
@@ -260,15 +273,15 @@ static void st_chaserTest() {
     const int total = LEDS_PER_SIDE + TAIL;
 
     for (int pos = 0; pos < total; pos++) {
-        fill_solid(ledsLeft,  LEDS_PER_SIDE, CRGB::Black);
-        fill_solid(ledsRight, LEDS_PER_SIDE, CRGB::Black);
+        fill_solid(ledsDriver,  LEDS_PER_SIDE, CRGB::Black);
+        fill_solid(ledsPassenger, LEDS_PER_SIDE, CRGB::Black);
 
         for (int t = 0; t < TAIL; t++) {
             int idx = pos - t;
             if (idx >= 0 && idx < LEDS_PER_SIDE) {
                 uint8_t bright = 255 - (uint8_t)(t * DIM_STEP);
-                ledsLeft[idx]  = CRGB(bright, bright, bright);
-                ledsRight[idx] = CRGB(bright, bright, bright);
+                ledsDriver[idx]  = CRGB(bright, bright, bright);
+                ledsPassenger[idx] = CRGB(bright, bright, bright);
             }
         }
         FastLED.show();
@@ -286,8 +299,8 @@ static void st_colorVerify() {
     const char* names[3] = { "RED", "GREEN", "BLUE" };
     for (int i = 0; i < 3; i++) {
         Serial.print(F("  Colour: ")); Serial.println(names[i]);
-        fill_solid(ledsLeft,  LEDS_PER_SIDE, cols[i]);
-        fill_solid(ledsRight, LEDS_PER_SIDE, cols[i]);
+        fill_solid(ledsDriver,  LEDS_PER_SIDE, cols[i]);
+        fill_solid(ledsPassenger, LEDS_PER_SIDE, cols[i]);
         FastLED.show();
         delay(350);
     }
@@ -334,6 +347,156 @@ static void runStartupSelfTest() {
 // Five scenes across all 380 LEDs per side.  Uses delay() like the self-test.
 // ===========================================================================
 
+// ===========================================================================
+// Startup animation — quick automotive rear-light sequence
+// Total ≈ 900 ms.  Replaces the old 9-second demo reel.
+//
+// Phase 1 (~380 ms): Red sequential fill sweeps outward on all three
+//   segments simultaneously.  Left panel fills col 0 → 20; right panel
+//   fills col 20 → 0.  Segments scale proportionally so they finish together.
+//
+// Phase 2 (~200 ms): White comet sweeps across the top strip (clear diffuser)
+//   outward on each side, leaving a dim-red base.
+//
+// Phase 3 (~300 ms): Brightness fades from full red to black.
+// ===========================================================================
+static void runStartupAnim() {
+    // ── Phase 1: outward sequential red fill ─────────────────────────────────
+    for (int step = 0; step <= STRIP_COLS + 2; step++) {
+        fill_solid(ledsDriver,  LEDS_PER_SIDE, CRGB::Black);
+        fill_solid(ledsPassenger, LEDS_PER_SIDE, CRGB::Black);
+
+        for (int seg = 0; seg < NUM_SEGMENTS; seg++) {
+            int segCols = (seg == SEG_MAIN) ? MAIN_COLS : STRIP_COLS;
+            int segRows = (seg == SEG_MAIN) ? MAIN_ROWS : STRIP_ROWS;
+            int limit   = constrain((step * segCols) / STRIP_COLS, 0, segCols - 1);
+
+            for (int col = 0; col <= limit; col++) {
+                for (int row = 0; row < segRows; row++) {
+                    driverPanel.setPixel(seg, row, col,                    CRGB(255, 0, 0));
+                    passengerPanel.setPixel(seg, row, segCols - 1 - col, CRGB(255, 0, 0));
+                }
+            }
+        }
+        FastLED.show();
+        delay(17);
+    }
+
+    // ── Phase 2: white comet on top strip (clear diffuser) ───────────────────
+    static constexpr int COMET_TAIL = 7;
+    for (int head = 0; head < STRIP_COLS + COMET_TAIL; head++) {
+        // Leave red on segs 1+2; repaint top strip only
+        for (int col = 0; col < STRIP_COLS; col++) {
+            for (int row = 0; row < STRIP_ROWS; row++) {
+                driverPanel.setPixel( SEG_TOP_STRIP, row, col,                    CRGB(20, 0, 0));
+                passengerPanel.setPixel(SEG_TOP_STRIP, row, col,                    CRGB(20, 0, 0));
+            }
+        }
+        for (int t = 0; t < COMET_TAIL; t++) {
+            int   idxL = head - t;
+            int   idxR = (STRIP_COLS - 1) - (head - t);
+            uint8_t b  = (uint8_t)(255 - (255 * t / COMET_TAIL));
+            if (idxL >= 0 && idxL < STRIP_COLS) {
+                for (int row = 0; row < STRIP_ROWS; row++)
+                    driverPanel.setPixel( SEG_TOP_STRIP, row, idxL, CRGB(b, b, b));
+            }
+            if (idxR >= 0 && idxR < STRIP_COLS) {
+                for (int row = 0; row < STRIP_ROWS; row++)
+                    passengerPanel.setPixel(SEG_TOP_STRIP, row, idxR, CRGB(b, b, b));
+            }
+        }
+        FastLED.show();
+        delay(8);
+    }
+
+    // ── Phase 3: fade to black ────────────────────────────────────────────────
+    for (int step = 15; step >= 0; step--) {
+        uint8_t scale = (uint8_t)(step * 17);
+        for (int i = 0; i < LEDS_PER_SIDE; i++) {
+            ledsDriver[i]  = CRGB((uint8_t)((ledsDriver[i].r  * scale) >> 8), 0, 0);
+            ledsPassenger[i] = CRGB((uint8_t)((ledsPassenger[i].r * scale) >> 8), 0, 0);
+        }
+        FastLED.show();
+        delay(18);
+    }
+    fill_solid(ledsDriver,  LEDS_PER_SIDE, CRGB::Black);
+    fill_solid(ledsPassenger, LEDS_PER_SIDE, CRGB::Black);
+    FastLED.show();
+}
+
+// ===========================================================================
+// Bench test cycle — cycles through every LightState in sequence so you can
+// verify each animation looks correct without a car harness.
+//
+// ENTRY: Hold PIN_DRIVER_RUNNING (GPIO 6) active at power-on.
+//        The cycle starts automatically after the startup self-test.
+//
+// Each state is held for the indicated duration while Serial prints the
+// state name.  After all states have been shown the cycle ends and normal
+// operation resumes.
+// ===========================================================================
+static void runTestCycle() {
+    struct TestStep {
+        LightState left;
+        LightState right;
+        const char* label;
+        uint32_t    durationMs;
+    };
+
+    static const TestStep steps[] = {
+        { LightState::RUNNING,    LightState::RUNNING,    "RUNNING (parking)",          2500 },
+        { LightState::BRAKE,      LightState::BRAKE,      "BRAKE",                      2500 },
+        { LightState::TURN,       LightState::OFF,        "LEFT TURN SIGNAL",           3500 },
+        { LightState::OFF,        LightState::TURN,       "RIGHT TURN SIGNAL",          3500 },
+        { LightState::BRAKE_TURN, LightState::BRAKE,      "BRAKE + LEFT TURN",          3500 },
+        { LightState::BRAKE,      LightState::BRAKE_TURN, "BRAKE + RIGHT TURN",         3500 },
+        { LightState::REVERSE,    LightState::REVERSE,    "REVERSE",                    2500 },
+        { LightState::HAZARD,     LightState::HAZARD,     "HAZARD",                     3500 },
+        { LightState::OFF,        LightState::OFF,        "OFF",                        1000 },
+    };
+
+    Serial.println(F(""));
+    Serial.println(F("[TEST] ====================================="));
+    Serial.println(F("[TEST]   BENCH TEST CYCLE — STARTING"));
+    Serial.println(F("[TEST] ====================================="));
+    Serial.println(F("[TEST] PIN_DRIVER_RUNNING held at boot."));
+    Serial.println(F("[TEST] Cycling through all light states."));
+    Serial.println(F(""));
+
+    // Ensure animation system is ready for this panel
+    driverPanel.begin();
+    passengerPanel.begin();
+
+    const int numSteps = (int)(sizeof(steps) / sizeof(steps[0]));
+    for (int i = 0; i < numSteps; i++) {
+        const TestStep& s = steps[i];
+        Serial.print(F("[TEST] [")); Serial.print(i + 1); Serial.print(F("/"));
+        Serial.print(numSteps); Serial.print(F("] "));
+        Serial.println(s.label);
+
+        unsigned long start = millis();
+        while (millis() - start < s.durationMs) {
+            unsigned long now = millis();
+            driverPanel.update(s.left,  now);
+            passengerPanel.update(s.right, now);
+            FastLED.show();
+            delay(16);
+        }
+    }
+
+    Serial.println(F(""));
+    Serial.println(F("[TEST] ====================================="));
+    Serial.println(F("[TEST]   BENCH TEST CYCLE — COMPLETE"));
+    Serial.println(F("[TEST]   Resuming normal operation."));
+    Serial.println(F("[TEST] ====================================="));
+    Serial.println(F(""));
+
+    driverPanel.fill(CRGB::Black);
+    passengerPanel.fill(CRGB::Black);
+    FastLED.show();
+    delay(200);
+}
+
 // ── Scene 1: Rainbow river (2 s) ─────────────────────────────────────────────
 // A hue rainbow scrolls across both panels.  Left and right scroll in opposite
 // directions so the two panels appear to "meet" in the middle.
@@ -346,8 +509,8 @@ static void demo_rainbowRiver() {
         for (int i = 0; i < LEDS_PER_SIDE; i++) {
             uint8_t hueL = offsetL + (uint8_t)(i * 255 / LEDS_PER_SIDE);
             uint8_t hueR = offsetR + (uint8_t)(i * 255 / LEDS_PER_SIDE);
-            ledsLeft[i]  = CHSV(hueL, 230, 200);
-            ledsRight[i] = CHSV(hueR, 230, 200);
+            ledsDriver[i]  = CHSV(hueL, 230, 200);
+            ledsPassenger[i] = CHSV(hueR, 230, 200);
         }
         FastLED.show();
         delay(frameMs);
@@ -366,19 +529,19 @@ static void demo_mirrorBolt() {
 
     auto drawBolt = [](int rIdx, int lIdx, uint8_t b) {
         if (rIdx >= 0 && rIdx < LEDS_PER_SIDE) {
-            ledsLeft[rIdx]  = CRGB(0, b, b);
-            ledsRight[rIdx] = CRGB(0, b, b);
+            ledsDriver[rIdx]  = CRGB(0, b, b);
+            ledsPassenger[rIdx] = CRGB(0, b, b);
         }
         if (lIdx >= 0 && lIdx < LEDS_PER_SIDE) {
-            ledsLeft[lIdx]  = CRGB(0, b, b);
-            ledsRight[lIdx] = CRGB(0, b, b);
+            ledsDriver[lIdx]  = CRGB(0, b, b);
+            ledsPassenger[lIdx] = CRGB(0, b, b);
         }
     };
 
     // Outward — from centre toward both ends
     for (int head = 0; head <= CENTER + TAIL; head++) {
-        fill_solid(ledsLeft,  LEDS_PER_SIDE, CRGB::Black);
-        fill_solid(ledsRight, LEDS_PER_SIDE, CRGB::Black);
+        fill_solid(ledsDriver,  LEDS_PER_SIDE, CRGB::Black);
+        fill_solid(ledsPassenger, LEDS_PER_SIDE, CRGB::Black);
         for (int t = 0; t < TAIL; t++) {
             int offset = head - t;
             if (offset < 0) continue;
@@ -391,8 +554,8 @@ static void demo_mirrorBolt() {
 
     // Inward — from both ends toward centre
     for (int head = 0; head <= CENTER + TAIL; head++) {
-        fill_solid(ledsLeft,  LEDS_PER_SIDE, CRGB::Black);
-        fill_solid(ledsRight, LEDS_PER_SIDE, CRGB::Black);
+        fill_solid(ledsDriver,  LEDS_PER_SIDE, CRGB::Black);
+        fill_solid(ledsPassenger, LEDS_PER_SIDE, CRGB::Black);
         for (int t = 0; t < TAIL; t++) {
             int offset = head - t;
             if (offset < 0) continue;
@@ -415,8 +578,8 @@ static void demo_theaterChase() {
     int step = 0;
     for (int t = 0; t < durationMs; t += frameMs, step++) {
         for (int i = 0; i < LEDS_PER_SIDE; i++) {
-            ledsLeft[i]  = ((i + step)          % 3 == 0) ? CRGB(220, 30, 0) : CRGB::Black;
-            ledsRight[i] = ((i - step + 3 * 100) % 3 == 0) ? CRGB(220, 30, 0) : CRGB::Black;
+            ledsDriver[i]  = ((i + step)          % 3 == 0) ? CRGB(220, 30, 0) : CRGB::Black;
+            ledsPassenger[i] = ((i - step + 3 * 100) % 3 == 0) ? CRGB(220, 30, 0) : CRGB::Black;
         }
         FastLED.show();
         delay(frameMs);
@@ -435,8 +598,8 @@ static void demo_breathe() {
         uint8_t sinInput = (uint8_t)((t % 800) * 256 / 800);
         uint8_t b        = sin8(sinInput);  // 0-255 smooth sine
         CRGB col(b, 0, (uint8_t)(b >> 1));  // deep magenta / purple
-        fill_solid(ledsLeft,  LEDS_PER_SIDE, col);
-        fill_solid(ledsRight, LEDS_PER_SIDE, col);
+        fill_solid(ledsDriver,  LEDS_PER_SIDE, col);
+        fill_solid(ledsPassenger, LEDS_PER_SIDE, col);
         FastLED.show();
         delay(frameMs);
     }
@@ -452,8 +615,8 @@ static void demo_fireFlash() {
     for (int t = 0; t < 400; t += frameMs) {
         uint8_t p = (uint8_t)(255 * t / 400);
         CRGB col(255, (uint8_t)(p >> 2), 0);
-        fill_solid(ledsLeft,  LEDS_PER_SIDE, col);
-        fill_solid(ledsRight, LEDS_PER_SIDE, col);
+        fill_solid(ledsDriver,  LEDS_PER_SIDE, col);
+        fill_solid(ledsPassenger, LEDS_PER_SIDE, col);
         FastLED.show();
         delay(frameMs);
     }
@@ -461,8 +624,8 @@ static void demo_fireFlash() {
     for (int t = 0; t < 250; t += frameMs) {
         uint8_t p = (uint8_t)(255 * t / 250);
         CRGB col(255, p, p);
-        fill_solid(ledsLeft,  LEDS_PER_SIDE, col);
-        fill_solid(ledsRight, LEDS_PER_SIDE, col);
+        fill_solid(ledsDriver,  LEDS_PER_SIDE, col);
+        fill_solid(ledsPassenger, LEDS_PER_SIDE, col);
         FastLED.show();
         delay(frameMs);
     }
@@ -470,12 +633,24 @@ static void demo_fireFlash() {
     for (int t = 0; t < 450; t += frameMs) {
         uint8_t p = 255 - (uint8_t)(255 * t / 450);
         CRGB col(p, p, p);
-        fill_solid(ledsLeft,  LEDS_PER_SIDE, col);
-        fill_solid(ledsRight, LEDS_PER_SIDE, col);
+        fill_solid(ledsDriver,  LEDS_PER_SIDE, col);
+        fill_solid(ledsPassenger, LEDS_PER_SIDE, col);
         FastLED.show();
         delay(frameMs);
     }
     FastLED.clear(true);
+}
+
+// ── Scene 6: Scrolling text on the top strip ─────────────────────────────────
+// The top strip has a clear diffuser so text appears in its true colour.
+// To change the text, colour, or speed, edit the font5x_scroll() call below.
+// Full A–Z, 0–9, and punctuation are available — see font5x.h for details.
+static void demo_scrollText() {
+    font5x_scroll(ledsDriver, ledsPassenger,
+                  "MADE BY AVERY IZATT",  // text to display
+                  CRGB(220, 220, 220),    // white on clear diffuser
+                  CRGB(30, 0, 0),         // dim red on red-diffuser segments
+                  45);                    // ms per column step
 }
 
 // ---------------------------------------------------------------------------
@@ -493,6 +668,8 @@ static void runAnimationDemo() {
     demo_breathe();
     Serial.println(F("[demo] Scene 5: Fire flash"));
     demo_fireFlash();
+    Serial.println(F("[demo] Scene 6: Scrolling text"));
+    demo_scrollText();
     Serial.println(F("[demo] ---- END ----"));
 }
 
@@ -524,6 +701,13 @@ static void inputTaskFn(void* /*param*/) {
 
 // ---------------------------------------------------------------------------
 void setup() {
+    // ── Disable unused RF subsystems ─────────────────────────────────────────
+    // This device communicates exclusively over CAN bus.  Disabling WiFi and
+    // BLE frees ~80 mA of idle current, frees heap, and eliminates the RF
+    // drivers as a potential crash source in the automotive EMI environment.
+    WiFi.mode(WIFI_OFF);   // safe to call before WiFi is ever started
+    btStop();              // no-op if BLE never started; disables it otherwise
+
     Serial.begin(115200);
 
     // ── Boot reason + NVS fault counter ──────────────────────────────────────
@@ -536,8 +720,8 @@ void setup() {
     esp_register_shutdown_handler(onSystemShutdown);
 
     // Register LED panels with FastLED
-    FastLED.addLeds<LED_CHIPSET, PIN_LED_LEFT,  LED_COLOR_ORDER>(ledsLeft,  LEDS_PER_SIDE);
-    FastLED.addLeds<LED_CHIPSET, PIN_LED_RIGHT, LED_COLOR_ORDER>(ledsRight, LEDS_PER_SIDE);
+    FastLED.addLeds<LED_CHIPSET, PIN_LED_DRIVER,  LED_COLOR_ORDER>(ledsDriver,  LEDS_PER_SIDE);
+    FastLED.addLeds<LED_CHIPSET, PIN_LED_PASSENGER, LED_COLOR_ORDER>(ledsPassenger, LEDS_PER_SIDE);
     FastLED.setBrightness(BRIGHTNESS_DEFAULT);
     FastLED.clear(true);
     // Disable temporal dithering: it adds CPU jitter and is unsuitable for
@@ -548,38 +732,89 @@ void setup() {
     // scales global brightness down automatically if the budget would be
     // exceeded.  This runs inside FastLED.show() — no manual work needed.
     FastLED.setMaxPowerInVoltsAndMilliamps(LED_VOLTAGE, LED_POWER_BUDGET_MA);
-
+    // ── Crank holdoff ────────────────────────────────────────────────────────
+    // Keep LEDs blank for CRANK_HOLDOFF_MS after boot.  If the car is being
+    // cranked and a momentary voltage sag resets the ESP32, it will restart
+    // the holdoff and wait again.  The WDT is not yet active here so a
+    // simple delay loop is safe.
+    if (CRANK_HOLDOFF_MS > 0) {
+        Serial.printf("[boot] crank holdoff — waiting %lu ms for supply to stabilise ...\n",
+                      CRANK_HOLDOFF_MS);
+        const unsigned long holdStart = millis();
+        while ((millis() - holdStart) < CRANK_HOLDOFF_MS) {
+            delay(10);  // yield; LEDs are already blank from FastLED.clear(true) above
+        }
+        Serial.println(F("[boot] holdoff complete — supply stable"));
+    }
     // Initialise animation registry
     AnimationRegistry::init();
 
     // Initialise optocoupler inputs (sets pin modes — must run before self-test)
     inputs.begin();
 
-    // ── Startup self-test ────────────────────────────────────────────────────
-    // Runs the segment ID flash, pixel chaser, and colour verify.
-    // Takes ~5 seconds on first boot; harmless to have on every power cycle.
-    runStartupSelfTest();
+    // ── Bench test cycle entry check ─────────────────────────────────────────
+    // Hold PIN_DRIVER_RUNNING (GPIO 6) active while powering on to run a full
+    // state walk-through before entering normal operation.  Useful for
+    // verifying every animation on the bench without a car harness.
+    // The check is intentionally placed before the self-test so Serial output
+    // from runTestCycle() appears immediately after pin-mode init.
+    const bool testModeRequested = (digitalRead(PIN_DRIVER_RUNNING) == OPT_ACTIVE_LEVEL);
 
-    // ── Animation demo ───────────────────────────────────────────────────────
-    // Five creative scenes that play once after the self-test.
-    // Total duration ≈ 9 seconds.  Safe to remove if boot time matters.
-    runAnimationDemo();
+    // ── Startup self-test ────────────────────────────────────────────────────
+    // Runs the segment ID flash, pixel chaser, and colour verify (~5 s).
+    // Only runs in bench mode (PIN_DRIVER_RUNNING held at power-on) so normal
+    // in-car boots reach the main loop — and functional brake lights — as
+    // fast as possible.  Never run the blocking self-test on every power cycle
+    // of a safety-critical device.
+    if (testModeRequested) {
+        runStartupSelfTest();
+    }
+
+    // ── Startup animation ────────────────────────────────────────────────────
+    // Quick automotive sequential sweep (~900 ms).  Runs on every boot so
+    // there is a brief visual confirmation the panels are alive.
+    runStartupAnim();
+
+    // ── Bench test cycle ─────────────────────────────────────────────────────
+    // Runs only if PIN_DRIVER_RUNNING was held active at power-on.
+    if (testModeRequested) {
+        runTestCycle();
+    }
     // ────────────────────────────────────────────────────────────────────────
 
     // Initialise taillight panels (sets idle animation)
-    leftPanel.begin();
-    rightPanel.begin();
+    driverPanel.begin();
+    passengerPanel.begin();
 
     // Initialise CAN bus (MCP2515 via SPI)
     canBus.begin();
 
+    // ── Boot fault reporting over CAN ────────────────────────────────────────
+    // Faults detected before CAN was up are reported here as one-shots.
+    switch (g_bootReason) {
+        case ESP_RST_TASK_WDT:
+        case ESP_RST_WDT:
+            canBus.reportFault(FAULT_WDT_RESET, FAULT_SEV_WARNING,
+                               (uint8_t)(g_bootFaultCount & 0xFF));
+            break;
+        case ESP_RST_PANIC:
+            canBus.reportFault(FAULT_PANIC_RESET, FAULT_SEV_CRITICAL,
+                               (uint8_t)(g_bootFaultCount & 0xFF));
+            break;
+        case ESP_RST_BROWNOUT:
+            canBus.reportFault(FAULT_BROWNOUT_RESET, FAULT_SEV_WARNING,
+                               (uint8_t)(g_bootFaultCount & 0xFF));
+            break;
+        default:
+            break;
+    }
+    if (g_stuckDriver != 0 || g_stuckPassenger != 0) {
+        canBus.reportFault(FAULT_INPUT_STUCK_BOOT, FAULT_SEV_WARNING,
+                           g_stuckDriver, g_stuckPassenger);
+    }
+
     // Initialise thermal manager (reads initial die temperature)
     thermal.begin();
-
-    // Initialise undervoltage lockout (reads initial rail voltage)
-    voltMon.begin();
-    Serial.printf("[uvlo] rail at boot: %.2f V\n", voltMon.voltageV());
-    Serial.printf("[uvlo] state: %s\n", voltMon.isReady() ? "READY" : "LOCKED");
 
     // ── Hardware Task Watchdog ────────────────────────────────────────────────
     // Initialised AFTER the startup demo so the long delay() sequences do
@@ -627,19 +862,26 @@ void loop() {
     // ── Thermal management ──────────────────────────────────────────────────
     thermal.tick(nowMs);
 
-    // ── Undervoltage lockout ────────────────────────────────────────────────
-    voltMon.tick(nowMs);
-    if (!voltMon.isReady()) {
-        // Rail too low (e.g. mid-crank). Blank LEDs once on the transition into
-        // the locked state, then just return. Calling FastLED.show() every loop
-        // iteration would hammer the SPI bus at full CPU speed.
-        if (vmonWasReady) {
-            FastLED.clear(true);  // blank + show once
-            vmonWasReady = false;
+    // ── Thermal fault reporting ─────────────────────────────────────────────
+    // Report on state change only to avoid spamming the CAN bus.
+    {
+        static uint8_t prevThermalFault = FAULT_NONE;
+        uint8_t newFault = FAULT_NONE;
+        float   t        = thermal.tempC();
+        if (t >= TEMP_SHUTDOWN_C)      newFault = FAULT_THERMAL_CRITICAL;
+        else if (t >= TEMP_DERATE_START_C) newFault = FAULT_THERMAL_WARN;
+
+        if (newFault != prevThermalFault) {
+            if (newFault != FAULT_NONE) {
+                uint8_t sev = (newFault == FAULT_THERMAL_CRITICAL)
+                              ? FAULT_SEV_CRITICAL : FAULT_SEV_WARNING;
+                canBus.reportFault(newFault, sev,
+                                   (uint8_t)constrain((int)t, 0, 255));
+            }
+            prevThermalFault = newFault;
         }
-        return;
     }
-    vmonWasReady = true;
+
     // Determine target brightness: prefer CAN override, else default.
     // Always pass through thermal derating — it is never bypassed, even
     // by a CAN command, so safety-critical lights always remain visible.
@@ -653,33 +895,64 @@ void loop() {
     // Input is polled by the input task on Core 0.  Read the atomic snapshots
     // (single-byte loads — guaranteed atomic on Xtensa LX7) so we always see
     // a coherent set of flags from a single debounce cycle.
-    const uint8_t ls = inputs.leftSnapshot();
-    const uint8_t rs = inputs.rightSnapshot();
+    const uint8_t ds = inputs.driverSnapshot();
+    const uint8_t ps = inputs.passengerSnapshot();
 
-    LightState leftState = resolveSideState(
-        ls & 0x01, ls & 0x02, ls & 0x04, ls & 0x08,
-        rs & 0x04
+    LightState driverState = resolveSideState(
+        ds & 0x01, ds & 0x02, ds & 0x04, ds & 0x08,
+        ps & 0x04
     );
-    LightState rightState = resolveSideState(
-        rs & 0x01, rs & 0x02, rs & 0x04, rs & 0x08,
-        ls & 0x04
+    LightState passengerState = resolveSideState(
+        ps & 0x01, ps & 0x02, ps & 0x04, ps & 0x08,
+        ds & 0x04
     );
 
     // ── CAN bus tick (TX broadcast + RX command processing) ─────────────────
-    canBus.tick(leftState, rightState, inputs, thermal);
+    canBus.tick(driverState, passengerState, inputs, thermal);
 
-    // Apply animation override if commanded over CAN
-    if (canBus.hasOverride()) {
-        leftState  = canBus.overrideLeft();
-        rightState = canBus.overrideRight();
+    // ── State override priority (highest → lowest) ───────────────────────────
+    //  1. Custom animation (Cmd 0x04) — plays to completion, then auto-clears
+    //  2. Animation override (Cmd 0x02) — holds until Cmd 0x03
+    //  3. Normal input-driven state
+    if (canBus.hasCustomAnim()) {
+        // Safety: physical brake and reverse signals are never suppressed by a
+        // custom animation.  bit0 = brake, bit3 = reverse (see inputs.h).
+        if (!(ds & 0x01) && !(ds & 0x08)) driverState  = LightState::CUSTOM;
+        if (!(ps & 0x01) && !(ps & 0x08)) passengerState = LightState::CUSTOM;
+
+        // Auto-clear once both sides' animations report done
+        bool leftDone  = false;
+        bool rightDone = false;
+        switch (AnimationRegistry::customSlot()) {
+            case AnimationRegistry::CustomSlot::SCROLL_TEXT:
+                leftDone = rightDone = AnimationRegistry::scrollText().isDone();
+                break;
+            case AnimationRegistry::CustomSlot::FLASH:
+                leftDone = rightDone = AnimationRegistry::flash().isDone();
+                break;
+            default:
+                leftDone = rightDone = true;
+                break;
+        }
+        if (leftDone && rightDone) {
+            canBus.clearCustomAnim();
+            AnimationRegistry::setCustomSlot(AnimationRegistry::CustomSlot::NONE);
+        }
+    } else if (canBus.hasOverride()) {
+        // Safety: never suppress an active brake or reverse signal via a CAN
+        // command — these are safety-critical lights.  Apply the override only
+        // when the physical brake and reverse channels are both inactive on
+        // each respective side.  bit0 = brake, bit3 = reverse (see inputs.h).
+        if (!(ds & 0x01) && !(ds & 0x08)) driverState  = canBus.overrideDriver();
+        if (!(ps & 0x01) && !(ps & 0x08)) passengerState = canBus.overridePassenger();
     }
 
     // Throttle animation updates to FRAME_INTERVAL_MS (~60 fps)
     if (nowMs - lastFrameMs >= FRAME_INTERVAL_MS) {
         lastFrameMs = nowMs;
 
-        leftPanel.update(leftState, nowMs);
-        rightPanel.update(rightState, nowMs);
+        driverPanel.update(driverState, nowMs);
+        passengerPanel.update(passengerState, nowMs);
 
         FastLED.show();
     }

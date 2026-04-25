@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // ---------------------------------------------------------------------------
 // taillight.h
@@ -15,9 +15,9 @@
 class TailLight {
 public:
     // `pixels`  — pointer to the CRGB array owned by main.cpp (380 elements)
-    // `isLeft`  — true for the driver-side (left) taillight
-    TailLight(CRGB* pixels, bool isLeft)
-        : _pixels(pixels), _isLeft(isLeft) {}
+    // `isDriver`  — true for the driver-side (left) taillight
+    TailLight(CRGB* pixels, bool isDriver)
+        : _pixels(pixels), _isDriver(isDriver) {}
 
     // Call once in setup() after FastLED.addLeds() has been called
     void begin();
@@ -26,7 +26,7 @@ public:
     void update(LightState state, unsigned long nowMs);
 
     // ── Helpers used by Animation subclasses ────────────────────────────────
-    bool isLeft() const { return _isLeft; }
+    bool isDriver() const { return _isDriver; }
 
     // Fill the entire taillight (all 380 pixels) with one colour
     void fill(CRGB colour);
@@ -50,7 +50,7 @@ public:
 
 private:
     CRGB*      _pixels;
-    bool       _isLeft;
+    bool       _isDriver;
 
     LightState  _currentState = LightState::OFF;
     Animation*  _currentAnim  = nullptr;

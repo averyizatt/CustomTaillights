@@ -1,4 +1,4 @@
-// ---------------------------------------------------------------------------
+﻿// ---------------------------------------------------------------------------
 // taillight.cpp
 // ---------------------------------------------------------------------------
 
@@ -7,7 +7,7 @@
 void TailLight::begin() {
     fill(CRGB::Black);
     _currentState = LightState::OFF;
-    _currentAnim  = AnimationRegistry::get(LightState::OFF, _isLeft);
+    _currentAnim  = AnimationRegistry::get(LightState::OFF, _isDriver);
     if (_currentAnim) _currentAnim->begin(*this, _currentState);
 }
 
@@ -17,7 +17,7 @@ void TailLight::update(LightState state, unsigned long nowMs) {
         if (_currentAnim) _currentAnim->end(*this);
 
         _currentState = state;
-        _currentAnim  = AnimationRegistry::get(state, _isLeft);
+        _currentAnim  = AnimationRegistry::get(state, _isDriver);
 
         if (_currentAnim) _currentAnim->begin(*this, _currentState);
     }
@@ -28,17 +28,19 @@ void TailLight::update(LightState state, unsigned long nowMs) {
 }
 
 void IRAM_ATTR TailLight::fill(CRGB colour) {
-    for (int i = 0; i < LEDS_PER_SIDE; i++) {
-        _pixels[i] = colour;
+    // Route through fillSegment so the diffuser filter is applied per segment
+    for (int seg = 0; seg < NUM_SEGMENTS; seg++) {
+        fillSegment(seg, colour);
     }
 }
 
 void IRAM_ATTR TailLight::fillSegment(int segment, CRGB colour) {
     if (segment < 0 || segment >= NUM_SEGMENTS) return;
+    CRGB filtered = applySegDiffuser(segment, colour);
     int count  = segmentSize(segment);
     int offset = SEG_OFFSET[segment];
     for (int i = 0; i < count; i++) {
-        _pixels[offset + i] = colour;
+        _pixels[offset + i] = filtered;
     }
 }
 
@@ -55,7 +57,7 @@ void TailLight::setPixel(int segment, int row, int col, CRGB colour) {
         if (row < 0 || row >= STRIP_ROWS) return;
         if (col < 0 || col >= STRIP_COLS) return;
     }
-    _pixels[_index(segment, row, col)] = colour;
+    _pixels[_index(segment, row, col)] = applySegDiffuser(segment, colour);
 }
 
 int TailLight::_index(int segment, int row, int col) const {
