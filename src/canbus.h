@@ -54,8 +54,8 @@ public:
     // ── Animation override ───────────────────────────────────────────────────
     // True after a Cmd 0x02 is received and before Cmd 0x03 clears it.
     bool       hasOverride()    const { return _hasOverride; }
-    LightState overrideDriver()   const { return _overrideDriver; }
-    LightState overridePassenger()  const { return _overridePassenger; }
+    LightState overrideDriver()    const { return _overrideDriver;    }  // driver side   (US left)
+    LightState overridePassenger() const { return _overridePassenger; }  // passenger side (US right)
 
     // ── Brightness override ──────────────────────────────────────────────────
     // brightnessChanged() is set to true when a Cmd 0x01 arrives.

@@ -91,8 +91,8 @@ void AnimTurnSignal::update(TailLight& side, LightState /*state*/, unsigned long
 
     side.fill(CRGB::Black);
 
-    bool sweepForward = side.isDriver();  // left panel: col 0 → col 20 (outward→inward)
-
+    // col 0 = outermost edge on both sides; TailLight::_index() mirrors the
+    // passenger panel automatically so no per-side direction logic is needed.
     for (int seg = 0; seg < NUM_SEGMENTS; seg++) {
         int segCols = (seg == SEG_MAIN) ? MAIN_COLS : STRIP_COLS;
         int segRows = (seg == SEG_MAIN) ? MAIN_ROWS : STRIP_ROWS;
@@ -102,9 +102,8 @@ void AnimTurnSignal::update(TailLight& side, LightState /*state*/, unsigned long
         colLimit = constrain(colLimit, 0, segCols - 1);
 
         for (int col = 0; col <= colLimit; col++) {
-            int c = sweepForward ? col : (segCols - 1 - col);
             for (int row = 0; row < segRows; row++) {
-                side.setPixel(seg, row, c, CRGB(255, 100, 0));  // amber
+                side.setPixel(seg, row, col, CRGB(255, 100, 0));  // amber
             }
         }
     }

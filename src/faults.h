@@ -26,8 +26,8 @@ static constexpr uint8_t FAULT_THERMAL_CRITICAL = 0x02;  // temp >= TEMP_SHUTDOW
 static constexpr uint8_t FAULT_CAN_BUS_OFF      = 0x03;  // MCP2515 TXBO — Serial only (bus is dead)
 
 // Input signals active at power-on (possible wiring short or pre-existing condition)
-// data0 = left-side stuck pin mask  (bit0=brake bit1=running bit2=turn bit3=reverse)
-// data1 = right-side stuck pin mask (same bit order)
+// data0 = driver-side    stuck pin mask  (bit0=brake bit1=running bit2=turn bit3=reverse)
+// data1 = passenger-side stuck pin mask (same bit order)
 static constexpr uint8_t FAULT_INPUT_STUCK_BOOT = 0x04;
 
 // Abnormal resets detected in NVS on this boot — data0 = accumulated count (low byte)

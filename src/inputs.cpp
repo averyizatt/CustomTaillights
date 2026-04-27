@@ -5,13 +5,13 @@
 #include "inputs.h"
 
 void Inputs::begin() {
-    // Left side  (channels 0-3) — brake and reverse get fast debounce
+    // Driver side (channels 0-3) — brake and reverse get fast debounce
     _channels[0].pin = PIN_DRIVER_BRAKE;   _channels[0].debounceMs = DEBOUNCE_FAST_MS; _channels[0].state = false; _channels[0].lastRaw = false; _channels[0].lastChangeMs = 0;
     _channels[1].pin = PIN_DRIVER_RUNNING; _channels[1].debounceMs = DEBOUNCE_MS;      _channels[1].state = false; _channels[1].lastRaw = false; _channels[1].lastChangeMs = 0;
     _channels[2].pin = PIN_DRIVER_TURN;    _channels[2].debounceMs = DEBOUNCE_MS;      _channels[2].state = false; _channels[2].lastRaw = false; _channels[2].lastChangeMs = 0;
     _channels[3].pin = PIN_DRIVER_REVERSE; _channels[3].debounceMs = DEBOUNCE_FAST_MS; _channels[3].state = false; _channels[3].lastRaw = false; _channels[3].lastChangeMs = 0;
 
-    // Right side (channels 4-7) — same pattern
+    // Passenger side (channels 4-7) — same pattern
     _channels[4].pin = PIN_PASSENGER_BRAKE;   _channels[4].debounceMs = DEBOUNCE_FAST_MS; _channels[4].state = false; _channels[4].lastRaw = false; _channels[4].lastChangeMs = 0;
     _channels[5].pin = PIN_PASSENGER_RUNNING; _channels[5].debounceMs = DEBOUNCE_MS;      _channels[5].state = false; _channels[5].lastRaw = false; _channels[5].lastChangeMs = 0;
     _channels[6].pin = PIN_PASSENGER_TURN;    _channels[6].debounceMs = DEBOUNCE_MS;      _channels[6].state = false; _channels[6].lastRaw = false; _channels[6].lastChangeMs = 0;

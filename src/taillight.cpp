@@ -61,7 +61,14 @@ void TailLight::setPixel(int segment, int row, int col, CRGB colour) {
 }
 
 int TailLight::_index(int segment, int row, int col) const {
-    int base = SEG_OFFSET[segment];
+    int base    = SEG_OFFSET[segment];
+    int segCols = (segment == SEG_MAIN) ? MAIN_COLS : STRIP_COLS;
+
+    // Mirror the column for the passenger side so that col 0 is always the
+    // outermost edge (farthest from the car's centre-line) on both sides.
+    // Animations can write col 0→N as "outermost→innermost" without any
+    // per-side direction logic.
+    if (!_isDriver) col = (segCols - 1) - col;
 
     if (segment == SEG_TOP_STRIP || segment == SEG_BOT_STRIP) {
         // ── Long strips: 21 cols × 5 rows ─────────────────────────────────

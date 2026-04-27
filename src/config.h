@@ -74,8 +74,8 @@ inline CRGB applySegDiffuser(int seg, CRGB c) {
 #endif
 
 // Data pins for each side
-static constexpr int  PIN_LED_DRIVER  = 20;  // GPIO20 → left  taillight DIN
-static constexpr int  PIN_LED_PASSENGER = 19;  // GPIO19 → right taillight DIN
+static constexpr int  PIN_LED_DRIVER    = 20;  // GPIO20 → driver-side  taillight DIN
+static constexpr int  PIN_LED_PASSENGER = 19;  // GPIO19 → passenger-side taillight DIN
 
 // Global brightness (0-255).  Keep well below 255 to limit current draw.
 static constexpr uint8_t BRIGHTNESS_DEFAULT    = 128;
@@ -107,7 +107,7 @@ static constexpr uint32_t LED_POWER_BUDGET_MA = 14500;    // mA  (14.5 A of the 
 //   O3 → Turn
 //   O4 → Running/Park
 //
-// Driver-side opto
+// ── Driver side (US left) ─────────────────────────────────────────────────
 //   O1 → brake        → GPIO 5
 //   O2 → reverse      → GPIO 7
 //   O3 → turn         → GPIO 4
@@ -117,6 +117,7 @@ static constexpr int PIN_DRIVER_RUNNING =  6;
 static constexpr int PIN_DRIVER_TURN    =  4;
 static constexpr int PIN_DRIVER_REVERSE =  7;
 
+// ── Passenger side (US right) ───────────────────────────────────────────────
 // Passenger-side opto
 //   O1 → brake        → GPIO 46
 //   O2 → reverse      → GPIO 10
@@ -195,6 +196,26 @@ static constexpr unsigned long FRAME_INTERVAL_MS = 16;   // ~60 fps
 
 // Turn-signal blink period (total on+off cycle), milliseconds
 static constexpr unsigned long TURN_BLINK_PERIOD_MS = 600;
+
+// ── Onboard status LED (WS2812B) ─────────────────────────────────────────────
+// A single WS2812B pixel on the DevKit board used as a system health indicator.
+//
+//   Board                   Onboard LED GPIO
+//   ─────────────────────── ────────────────
+//   ESP32-C3-DevKitM-1      GPIO 8   ← default
+//   ESP32-S3-DevKitC-1 v1.1 GPIO 48
+//
+// Change PIN_STATUS_LED to match whichever board you are running.
+//
+// STATUS_LED_BRIGHT sets the per-controller scale (0–255).  It is applied
+// independently of the global taillight brightness so thermal derating never
+// dims the indicator below a readable level.
+static constexpr int     PIN_STATUS_LED    =  8;
+static constexpr uint8_t STATUS_LED_BRIGHT = 40;   // ~16% max; plenty for a small dot
+
+// How long (ms) to display FAULT_HISTORY blinking after a boot caused by a
+// prior WDT or panic reset, before settling to the current health state.
+static constexpr unsigned long FAULT_DISPLAY_MS = 10000;
 
 // ── Crank holdoff ────────────────────────────────────────────────────────────
 // After every boot the controller waits this long with LEDs blank before

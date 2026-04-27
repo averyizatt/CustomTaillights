@@ -4,13 +4,13 @@
 //
 // Hardware overview
 // ─────────────────
-//  • Two taillights (left / right), each composed of THREE chained segments:
+//  • Two taillights (driver / passenger), each composed of THREE chained segments:
 //      Seg 0 — SEG_TOP_STRIP : 21 cols × 5  rows = 105 LEDs
 //      Seg 1 — SEG_BOT_STRIP : 21 cols × 5  rows = 105 LEDs
 //      Seg 2 — SEG_MAIN      : 17 cols × 10 rows = 170 LEDs
 //      Total per side: 380 LEDs
-//      – Left  taillight → GPIO PIN_LED_DRIVER  (20)
-//      – Right taillight → GPIO PIN_LED_PASSENGER (19)
+//      – Driver    taillight → GPIO PIN_LED_DRIVER    (20)  ← US left
+//      – Passenger taillight → GPIO PIN_LED_PASSENGER (19)  ← US right
 //  • 4-channel optocoupler (stock 12 V → 3.3 V isolation)
 //      – CH1 Left turn   → GPIO PIN_OPT_LEFT_TURN  (4)
 //      – CH2 Right turn  → GPIO PIN_OPT_RIGHT_TURN (5)
@@ -42,17 +42,19 @@
 #include "thermal.h"
 #include "font5x.h"
 #include "faults.h"
+#include "status_led.h"
 
 // ── Pixel buffers (owned by main, shared with TailLight objects) ─────────────
-CRGB ledsDriver [LEDS_PER_SIDE];
-CRGB ledsPassenger[LEDS_PER_SIDE];
+CRGB ledsDriver   [LEDS_PER_SIDE];   // driver side   (US left)
+CRGB ledsPassenger[LEDS_PER_SIDE];   // passenger side (US right)
 
 // ── Subsystem objects ────────────────────────────────────────────────────────
 Inputs    inputs;
-TailLight driverPanel (ledsDriver,  true);
+TailLight driverPanel   (ledsDriver,    true);
 TailLight passengerPanel(ledsPassenger, false);
 CANBus         canBus;
 ThermalManager thermal;
+StatusLed      statusLed;
 
 // ── Timing ───────────────────────────────────────────────────────────────────
 static unsigned long lastFrameMs = 0;
@@ -145,6 +147,8 @@ static void logAndCountReset() {
 static void onSystemShutdown() {
     fill_solid(ledsDriver,  LEDS_PER_SIDE, CRGB::Black);
     fill_solid(ledsPassenger, LEDS_PER_SIDE, CRGB::Black);
+    // Solid red on the status LED so it's clear the MCU is restarting.
+    statusLed.pixel = CRGB(255, 0, 0);
     FastLED.show();
 }
 
@@ -371,10 +375,11 @@ static void runStartupAnim() {
             int segRows = (seg == SEG_MAIN) ? MAIN_ROWS : STRIP_ROWS;
             int limit   = constrain((step * segCols) / STRIP_COLS, 0, segCols - 1);
 
+            // col 0 = outermost on both sides; _index() mirrors passenger automatically
             for (int col = 0; col <= limit; col++) {
                 for (int row = 0; row < segRows; row++) {
-                    driverPanel.setPixel(seg, row, col,                    CRGB(255, 0, 0));
-                    passengerPanel.setPixel(seg, row, segCols - 1 - col, CRGB(255, 0, 0));
+                    driverPanel.setPixel(seg, row, col, CRGB(255, 0, 0));
+                    passengerPanel.setPixel(seg, row, col, CRGB(255, 0, 0));
                 }
             }
         }
@@ -393,16 +398,13 @@ static void runStartupAnim() {
             }
         }
         for (int t = 0; t < COMET_TAIL; t++) {
-            int   idxL = head - t;
-            int   idxR = (STRIP_COLS - 1) - (head - t);
-            uint8_t b  = (uint8_t)(255 - (255 * t / COMET_TAIL));
-            if (idxL >= 0 && idxL < STRIP_COLS) {
-                for (int row = 0; row < STRIP_ROWS; row++)
-                    driverPanel.setPixel( SEG_TOP_STRIP, row, idxL, CRGB(b, b, b));
-            }
-            if (idxR >= 0 && idxR < STRIP_COLS) {
-                for (int row = 0; row < STRIP_ROWS; row++)
-                    passengerPanel.setPixel(SEG_TOP_STRIP, row, idxR, CRGB(b, b, b));
+            int     idx = head - t;  // col 0 = outermost; passenger mirror via _index()
+            uint8_t b   = (uint8_t)(255 - (255 * t / COMET_TAIL));
+            if (idx >= 0 && idx < STRIP_COLS) {
+                for (int row = 0; row < STRIP_ROWS; row++) {
+                    driverPanel.setPixel(SEG_TOP_STRIP, row, idx, CRGB(b, b, b));
+                    passengerPanel.setPixel(SEG_TOP_STRIP, row, idx, CRGB(b, b, b));
+                }
             }
         }
         FastLED.show();
@@ -722,6 +724,14 @@ void setup() {
     // Register LED panels with FastLED
     FastLED.addLeds<LED_CHIPSET, PIN_LED_DRIVER,  LED_COLOR_ORDER>(ledsDriver,  LEDS_PER_SIDE);
     FastLED.addLeds<LED_CHIPSET, PIN_LED_PASSENGER, LED_COLOR_ORDER>(ledsPassenger, LEDS_PER_SIDE);
+    // Register the onboard status LED on its own controller with a fixed scale
+    // so it is never dimmed by the global taillight brightness / thermal derating.
+    {
+        auto& statusCtrl = FastLED.addLeds<WS2812B, PIN_STATUS_LED, GRB>(&statusLed.pixel, 1);
+        statusCtrl.setScale(STATUS_LED_BRIGHT);
+    }
+    statusLed.begin();  // state = BOOT, pixel = Black
+
     FastLED.setBrightness(BRIGHTNESS_DEFAULT);
     FastLED.clear(true);
     // Disable temporal dithering: it adds CPU jitter and is unsuitable for
@@ -742,7 +752,11 @@ void setup() {
                       CRANK_HOLDOFF_MS);
         const unsigned long holdStart = millis();
         while ((millis() - holdStart) < CRANK_HOLDOFF_MS) {
-            delay(10);  // yield; LEDs are already blank from FastLED.clear(true) above
+            // Animate the status LED (slow blue blink) so there is a visible
+            // sign of life during the holdoff window.
+            statusLed.tick(millis());
+            FastLED.show();
+            delay(10);
         }
         Serial.println(F("[boot] holdoff complete — supply stable"));
     }
@@ -947,6 +961,24 @@ void loop() {
         if (!(ps & 0x01) && !(ps & 0x08)) passengerState = canBus.overridePassenger();
     }
 
+    // ── Status LED ──────────────────────────────────────────────────────────
+    // Compute desired state from current system health (highest priority wins).
+    // FAULT_HISTORY blinks for FAULT_DISPLAY_MS after a crash-boot, then clears.
+    {
+        static const unsigned long faultDisplayEnd =
+            (g_bootFaultCount > 0) ? (millis() + FAULT_DISPLAY_MS) : 0UL;
+
+        StatusLedState desired;
+        if      (thermal.isShutdown())              desired = StatusLedState::THERMAL_SHUTDOWN;
+        else if (thermal.derateAmount() > 0)        desired = StatusLedState::THERMAL_WARN;
+        else if (!canBus.isOnline())                desired = StatusLedState::CAN_OFFLINE;
+        else if (faultDisplayEnd && nowMs < faultDisplayEnd)
+                                                    desired = StatusLedState::FAULT_HISTORY;
+        else                                        desired = StatusLedState::OK;
+
+        statusLed.setState(desired);
+    }
+
     // Throttle animation updates to FRAME_INTERVAL_MS (~60 fps)
     if (nowMs - lastFrameMs >= FRAME_INTERVAL_MS) {
         lastFrameMs = nowMs;
@@ -954,6 +986,8 @@ void loop() {
         driverPanel.update(driverState, nowMs);
         passengerPanel.update(passengerState, nowMs);
 
+        // Tick the status LED and push all controllers together in one show()
+        statusLed.tick(nowMs);
         FastLED.show();
     }
 }

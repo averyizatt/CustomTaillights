@@ -98,13 +98,13 @@ void CANBus::_sendState(LightState driverState, LightState passengerState,
     frame.data[0] = static_cast<uint8_t>(driverState);
     frame.data[1] = static_cast<uint8_t>(passengerState);
 
-    // Left raw flags
-    frame.data[2] = (inputs.driverBrake()   ? 0x01 : 0)
-                  | (inputs.driverRunning() ? 0x02 : 0)
-                  | (inputs.driverTurn()    ? 0x04 : 0)
-                  | (inputs.driverReverse() ? 0x08 : 0);
+    // Driver raw flags
+    frame.data[2] = (inputs.driverBrake()      ? 0x01 : 0)
+                  | (inputs.driverRunning()    ? 0x02 : 0)
+                  | (inputs.driverTurn()       ? 0x04 : 0)
+                  | (inputs.driverReverse()    ? 0x08 : 0);
 
-    // Right raw flags
+    // Passenger raw flags
     frame.data[3] = (inputs.passengerBrake()   ? 0x01 : 0)
                   | (inputs.passengerRunning() ? 0x02 : 0)
                   | (inputs.passengerTurn()    ? 0x04 : 0)

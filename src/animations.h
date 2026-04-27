@@ -177,8 +177,8 @@ private:
     static AnimOff        _off;
     static AnimRunning    _running;
     static AnimBrake      _brake;
-    static AnimTurnSignal _turnDriver;
-    static AnimTurnSignal _turnPassenger;
+    static AnimTurnSignal _turnDriver;     // driver-side   sequential sweep
+    static AnimTurnSignal _turnPassenger;  // passenger-side sequential sweep
     static AnimReverse    _reverse;
     static AnimHazard     _hazard;
     static AnimScrollText _scrollText;

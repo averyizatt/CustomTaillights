@@ -48,8 +48,8 @@
 //  Forces both sides to play a specific LightState animation, ignoring real
 //  inputs.  Stays active until Cmd 0x03 clears it.
 //  DLC = 3
-//  Byte 1 : left  LightState (0–7)
-//  Byte 2 : right LightState (0–7)
+//  Byte 1 : driver    LightState (0–7)   — US left
+//  Byte 2 : passenger LightState (0–7)   — US right
 //
 //  Example (force both sides to BRAKE):
 //    ID=0x101  DLC=3  Data: 02 02 02
@@ -94,7 +94,7 @@
 //    0x01  FAULT_THERMAL_WARN      data0 = temp °C
 //    0x02  FAULT_THERMAL_CRITICAL  data0 = temp °C
 //    0x03  FAULT_CAN_BUS_OFF       (Serial only — bus is dead)
-//    0x04  FAULT_INPUT_STUCK_BOOT  data0 = left stuck mask, data1 = right
+//    0x04  FAULT_INPUT_STUCK_BOOT  data0 = driver stuck mask, data1 = passenger
 //    0x05  FAULT_WDT_RESET         data0 = accumulated count
 //    0x06  FAULT_PANIC_RESET       data0 = accumulated count
 //    0x07  FAULT_BROWNOUT_RESET    data0 = accumulated count

@@ -45,8 +45,8 @@ private:
         unsigned long lastChangeMs = 0;
     };
 
-    // Channels 0-3: left side  (brake, running, turn, reverse)
-    // Channels 4-7: right side (brake, running, turn, reverse)
+    // Channels 0-3: driver side    (brake, running, turn, reverse)  — US left
+    // Channels 4-7: passenger side (brake, running, turn, reverse)  — US right
     Channel _channels[8];
 
     // All output flags are volatile so the compiler never optimises away reads
