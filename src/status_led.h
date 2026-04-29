@@ -16,9 +16,9 @@
 // Usage (main.cpp):
 //   1. Declare: StatusLed statusLed;
 //   2. Register with FastLED BEFORE calling begin():
-//        auto& ctrl = FastLED.addLeds<WS2812B, PIN_STATUS_LED, GRB>
-//                               (&statusLed.pixel, 1);
-//        ctrl.setScale(STATUS_LED_BRIGHT);
+//        FastLED.addLeds<WS2812B, PIN_STATUS_LED, GRB>
+//                       (&statusLed.pixel, 1);
+//      (Brightness capped via nscale8 inside tick())
 //   3. statusLed.begin();
 //   4. In loop(): statusLed.setState(desired); (then FastLED.show() handles it)
 // ---------------------------------------------------------------------------

@@ -21,9 +21,9 @@ void StatusLed::setState(StatusLedState s) {
 }
 
 void StatusLed::tick(unsigned long nowMs) {
-    // All pixel values use full range (0–255); the controller-level scale set
-    // via ctrl.setScale(STATUS_LED_BRIGHT) in main.cpp dims the LED globally
-    // without interfering with the taillight global brightness.
+    // All pixel values use full range (0–255); STATUS_LED_BRIGHT is applied
+    // via nscale8 at the end of this function so the status LED is never
+    // dimmed by the global taillight brightness / thermal derating.
 
     switch (_state) {
 
@@ -71,4 +71,7 @@ void StatusLed::tick(unsigned long nowMs) {
             pixel = _blinkOn ? CRGB(255, 0, 0) : CRGB::Black;
             break;
     }
+    // Apply fixed brightness scale so this LED is not affected by the global
+    // FastLED brightness (set for the taillights).
+    pixel.nscale8(STATUS_LED_BRIGHT);
 }

@@ -727,8 +727,7 @@ void setup() {
     // Register the onboard status LED on its own controller with a fixed scale
     // so it is never dimmed by the global taillight brightness / thermal derating.
     {
-        auto& statusCtrl = FastLED.addLeds<WS2812B, PIN_STATUS_LED, GRB>(&statusLed.pixel, 1);
-        statusCtrl.setScale(STATUS_LED_BRIGHT);
+        FastLED.addLeds<WS2812B, PIN_STATUS_LED, GRB>(&statusLed.pixel, 1);
     }
     statusLed.begin();  // state = BOOT, pixel = Black
 
