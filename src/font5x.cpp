@@ -175,12 +175,21 @@ void font5x_scroll(CRGB*       ledsDriver,
             for (int row = 0; row < STRIP_ROWS; row++) {
                 CRGB px = (bits & (1 << row)) ? fgColour : CRGB::Black;
 
-                // Replicate the serpentine wiring of SEG_TOP_STRIP
-                int ledIdx = SEG_OFFSET[SEG_TOP_STRIP] +
-                             ((row % 2 == 0) ? row * STRIP_COLS + col
-                                             : row * STRIP_COLS + (STRIP_COLS - 1 - col));
-                ledsDriver[ledIdx]  = px;
-                ledsPassenger[ledIdx] = px;
+                // Driver side: data-in is at the top-right (inner edge).
+                // Reverse the column so the glyph's leftmost pixel lands at
+                // the physical left (outer) edge as seen from behind the car.
+                int ledIdxDriver = SEG_OFFSET[SEG_TOP_STRIP] +
+                                   ((row % 2 == 0) ? row * STRIP_COLS + (STRIP_COLS - 1 - col)
+                                                   : row * STRIP_COLS + col);
+                ledsDriver[ledIdxDriver] = px;
+
+                // Passenger side: data-in is at the top-left (inner edge).
+                // No column reversal needed — the glyph's leftmost pixel
+                // naturally lands at the physical left (inner) edge.
+                int ledIdxPassenger = SEG_OFFSET[SEG_TOP_STRIP] +
+                                      ((row % 2 == 0) ? row * STRIP_COLS + col
+                                                      : row * STRIP_COLS + (STRIP_COLS - 1 - col));
+                ledsPassenger[ledIdxPassenger] = px;
             }
         }
 

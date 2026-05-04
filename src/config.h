@@ -12,13 +12,13 @@
 // Each physical taillight (left or right) is made of THREE chained segments:
 //
 //   Segment 0 — SEG_TOP_STRIP : 21 cols × 5 rows = 105 LEDs
-//     Wiring: row-major serpentine, data-in  top-left  (row 0, col  0)
-//                                  data-out bottom-left (physical connector
-//                                  position; last pixel is row 4, col 20
-//                                  per standard L→R serpentine)
+//     Wiring: row-major serpentine.
+//     Driver side  : data-in top-RIGHT (inner edge, row 0 right→left).
+//     Passenger side: data-in top-LEFT  (inner edge, row 0 left→right).
+//     Both sides are physical mirrors of each other about the car centre-line.
 //
 //   Segment 1 — SEG_BOT_STRIP : 21 cols × 5 rows = 105 LEDs
-//     Same wiring as SEG_TOP_STRIP.
+//     Same wiring as SEG_TOP_STRIP (chained from SEG_TOP_STRIP data-out).
 //
 //   Segment 2 — SEG_MAIN      : 17 cols × 10 rows = 170 LEDs
 //     Wiring: row-major serpentine starting at the bottom row,
@@ -80,6 +80,13 @@ static constexpr int  PIN_LED_PASSENGER = 19;  // GPIO19 → passenger-side tail
 // Global brightness (0-255).  Keep well below 255 to limit current draw.
 static constexpr uint8_t BRIGHTNESS_DEFAULT    = 128;
 static constexpr uint8_t BRIGHTNESS_DIM        =  40;  // running-light level
+
+// Per-side brightness trim (0-255, 255 = full, no reduction).
+// If one side appears brighter than the other due to LED binning or wiring
+// differences, reduce the brighter side's value until both match visually.
+// Driver-side is US left; passenger-side is US right.
+static constexpr uint8_t BRIGHTNESS_SCALE_DRIVER    = 255;
+static constexpr uint8_t BRIGHTNESS_SCALE_PASSENGER = 235;
 // Minimum brightness enforced under all fault conditions so safety-critical
 // signals (brake, turn) remain visible even if the MCU is overheating.
 static constexpr uint8_t BRIGHTNESS_MIN_SAFETY =  30;
@@ -210,8 +217,8 @@ static constexpr unsigned long TURN_BLINK_PERIOD_MS = 600;
 // STATUS_LED_BRIGHT sets the per-controller scale (0–255).  It is applied
 // independently of the global taillight brightness so thermal derating never
 // dims the indicator below a readable level.
-static constexpr int     PIN_STATUS_LED    =  8;
-static constexpr uint8_t STATUS_LED_BRIGHT = 40;   // ~16% max; plenty for a small dot
+static constexpr int     PIN_STATUS_LED    =  48;  // GPIO48 on ESP32-S3-DevKitC-1 v1.1
+static constexpr uint8_t STATUS_LED_BRIGHT = 180;  // per-controller cap (0-255)
 
 // How long (ms) to display FAULT_HISTORY blinking after a boot caused by a
 // prior WDT or panic reset, before settling to the current health state.

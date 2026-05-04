@@ -43,6 +43,14 @@
 #include "font5x.h"
 #include "faults.h"
 #include "status_led.h"
+#include "settings.h"
+#include "wifi_server.h"
+
+// Preview state set by POST /api/preview in wifi_server.cpp.
+// Applied in loop() to let the web UI trigger live light previews.
+extern volatile LightState    g_preview_driver;
+extern volatile LightState    g_preview_passenger;
+extern volatile unsigned long g_preview_until_ms;
 
 // ── Pixel buffers (owned by main, shared with TailLight objects) ─────────────
 CRGB ledsDriver   [LEDS_PER_SIDE];   // driver side   (US left)
@@ -703,15 +711,13 @@ static void inputTaskFn(void* /*param*/) {
 
 // ---------------------------------------------------------------------------
 void setup() {
-    // ── Disable unused RF subsystems ─────────────────────────────────────────
-    // This device communicates exclusively over CAN bus.  Disabling WiFi and
-    // BLE frees ~80 mA of idle current, frees heap, and eliminates the RF
-    // drivers as a potential crash source in the automotive EMI environment.
-    WiFi.mode(WIFI_OFF);   // safe to call before WiFi is ever started
-    btStop();              // no-op if BLE never started; disables it otherwise
+    // BLE is not used by this firmware — disable it to recover heap.
+    btStop();
 
     Serial.begin(115200);
-
+    // ── Load persisted settings (NVS) ────────────────────────────────────────────
+    // Must be called before any code reads g_settings (brightness, WiFi, etc.).
+    settings_load();
     // ── Boot reason + NVS fault counter ──────────────────────────────────────
     // Must run before any Serial output that overwrites the reason line.
     logAndCountReset();
@@ -729,9 +735,15 @@ void setup() {
     {
         FastLED.addLeds<WS2812B, PIN_STATUS_LED, GRB>(&statusLed.pixel, 1);
     }
+    // Apply per-side brightness trims (config.h).  These are independent of
+    // the global brightness set by FastLED.setBrightness() so they persist
+    // even when thermal derating adjusts the global scale each frame.
+    // Controller indices: 0 = driver, 1 = passenger, 2 = status LED.
+    FastLED[0].setScale(BRIGHTNESS_SCALE_DRIVER);
+    FastLED[1].setScale(BRIGHTNESS_SCALE_PASSENGER);
     statusLed.begin();  // state = BOOT, pixel = Black
 
-    FastLED.setBrightness(BRIGHTNESS_DEFAULT);
+    FastLED.setBrightness(g_settings.brightness);
     FastLED.clear(true);
     // Disable temporal dithering: it adds CPU jitter and is unsuitable for
     // safety-critical lighting where consistent brightness is required.
@@ -784,9 +796,11 @@ void setup() {
     }
 
     // ── Startup animation ────────────────────────────────────────────────────
-    // Quick automotive sequential sweep (~900 ms).  Runs on every boot so
-    // there is a brief visual confirmation the panels are alive.
-    runStartupAnim();
+    // Quick automotive sequential sweep (~900 ms).  Skipped when disabled
+    // via the web UI (startup_anim == 0) for instant-on in-car boots.
+    if (g_settings.startup_anim) {
+        runStartupAnim();
+    }
 
     // ── Bench test cycle ─────────────────────────────────────────────────────
     // Runs only if PIN_DRIVER_RUNNING was held active at power-on.
@@ -861,6 +875,11 @@ void setup() {
     );
     // ────────────────────────────────────────────────────────────────────────
 
+    // ── WiFi + HTTP server ────────────────────────────────────────────────────
+    // Brings up WiFi in AP or Station mode (per g_settings) and registers all
+    // HTTP routes.  Must be called after settings_load().
+    wifiServer.begin();
+
     Serial.println(F("[taillight] ready — entering main loop"));
 }
 
@@ -871,6 +890,9 @@ void loop() {
     // Feed the hardware Task Watchdog.  If this call stops arriving within
     // WDT_TIMEOUT_S seconds the MCU performs a clean panic reset.
     esp_task_wdt_reset();
+
+    // Process any pending HTTP requests from the web UI.
+    wifiServer.handle();
 
     // ── Thermal management ──────────────────────────────────────────────────
     thermal.tick(nowMs);
@@ -900,7 +922,7 @@ void loop() {
     // by a CAN command, so safety-critical lights always remain visible.
     uint8_t targetBrightness = canBus.brightnessChanged()
                              ? canBus.brightness()
-                             : BRIGHTNESS_DEFAULT;
+                             : g_settings.brightness;
     uint8_t safeBrightness = thermal.applyBrightness(targetBrightness);
     FastLED.setBrightness(safeBrightness);
     if (canBus.brightnessChanged()) canBus.clearBrightnessChanged();
@@ -960,6 +982,23 @@ void loop() {
         if (!(ps & 0x01) && !(ps & 0x08)) passengerState = canBus.overridePassenger();
     }
 
+    // ── Web UI preview override ──────────────────────────────────────────────
+    // POST /api/preview sets a timed state override (3 s) so the user can
+    // verify animation colors from the mobile settings page.
+    // Safety: brake and reverse physical signals are never suppressed.
+    if (nowMs < g_preview_until_ms) {
+        if (!(ds & 0x01) && !(ds & 0x08)) driverState    = g_preview_driver;
+        if (!(ps & 0x01) && !(ps & 0x08)) passengerState = g_preview_passenger;
+    }
+
+    // ── Show mode override ───────────────────────────────────────────────────
+    // Activates the standalone show animation when enabled from the web UI.
+    // Safety: brake and reverse always win — show mode cannot suppress them.
+    if (g_settings.show_mode) {
+        if (!(ds & 0x01) && !(ds & 0x08)) driverState    = LightState::SHOW;
+        if (!(ps & 0x01) && !(ps & 0x08)) passengerState = LightState::SHOW;
+    }
+
     // ── Status LED ──────────────────────────────────────────────────────────
     // Compute desired state from current system health (highest priority wins).
     // FAULT_HISTORY blinks for FAULT_DISPLAY_MS after a crash-boot, then clears.
@@ -970,7 +1009,6 @@ void loop() {
         StatusLedState desired;
         if      (thermal.isShutdown())              desired = StatusLedState::THERMAL_SHUTDOWN;
         else if (thermal.derateAmount() > 0)        desired = StatusLedState::THERMAL_WARN;
-        else if (!canBus.isOnline())                desired = StatusLedState::CAN_OFFLINE;
         else if (faultDisplayEnd && nowMs < faultDisplayEnd)
                                                     desired = StatusLedState::FAULT_HISTORY;
         else                                        desired = StatusLedState::OK;
@@ -978,8 +1016,8 @@ void loop() {
         statusLed.setState(desired);
     }
 
-    // Throttle animation updates to FRAME_INTERVAL_MS (~60 fps)
-    if (nowMs - lastFrameMs >= FRAME_INTERVAL_MS) {
+    // Throttle animation updates to g_settings.frame_ms (~60 fps default)
+    if (nowMs - lastFrameMs >= g_settings.frame_ms) {
         lastFrameMs = nowMs;
 
         driverPanel.update(driverState, nowMs);

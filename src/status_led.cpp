@@ -37,7 +37,7 @@ void StatusLed::tick(unsigned long nowMs) {
             break;
 
         case StatusLedState::OK:
-            // Solid green — calm, non-distracting confirmation that all is well
+            // Solid green
             pixel = CRGB(0, 255, 0);
             break;
 
@@ -51,19 +51,17 @@ void StatusLed::tick(unsigned long nowMs) {
             break;
 
         case StatusLedState::THERMAL_WARN:
-            // Solid yellow — temperature is elevated but the system is coping
-            pixel = CRGB(255, 180, 0);
+            // Solid yellow
+            pixel = CRGB(255, 200, 0);
             break;
 
         case StatusLedState::THERMAL_SHUTDOWN:
-            // Solid red — brightness has been clamped for safety
+            // Solid red
             pixel = CRGB(255, 0, 0);
             break;
 
         case StatusLedState::FAULT_HISTORY:
             // Fast red blink: 150 ms on / 150 ms off
-            // Displayed for FAULT_DISPLAY_MS after boot, then yields to current
-            // health state (see main.cpp loop()).
             if ((nowMs - _lastMs) >= 150UL) {
                 _lastMs  = nowMs;
                 _blinkOn = !_blinkOn;
@@ -71,7 +69,9 @@ void StatusLed::tick(unsigned long nowMs) {
             pixel = _blinkOn ? CRGB(255, 0, 0) : CRGB::Black;
             break;
     }
-    // Apply fixed brightness scale so this LED is not affected by the global
-    // FastLED brightness (set for the taillights).
+    // Cap brightness so the status dot stays dim relative to the taillights.
+    // STATUS_LED_BRIGHT is applied here independently of FastLED's global
+    // setBrightness() — the nscale8 fires first so the controller sees an
+    // already-dimmed value before any further global scaling is applied.
     pixel.nscale8(STATUS_LED_BRIGHT);
 }

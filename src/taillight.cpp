@@ -12,12 +12,16 @@ void TailLight::begin() {
 }
 
 void TailLight::update(LightState state, unsigned long nowMs) {
-    // On state change, swap to the new animation
-    if (state != _currentState) {
+    // Re-query the registry every call so live settings changes (e.g. changing
+    // show_anim while already in SHOW state, or changing brake_anim while
+    // braking) take effect immediately without needing a state transition.
+    Animation* next = AnimationRegistry::get(state, _isDriver);
+
+    if (state != _currentState || next != _currentAnim) {
         if (_currentAnim) _currentAnim->end(*this);
 
         _currentState = state;
-        _currentAnim  = AnimationRegistry::get(state, _isDriver);
+        _currentAnim  = next;
 
         if (_currentAnim) _currentAnim->begin(*this, _currentState);
     }
