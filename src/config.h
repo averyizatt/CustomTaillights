@@ -135,8 +135,10 @@ static constexpr int PIN_PASSENGER_RUNNING =  9;
 static constexpr int PIN_PASSENGER_TURN    =  3;
 static constexpr int PIN_PASSENGER_REVERSE = 10;
 
-// Logic level when the stock signal is ACTIVE (optocoupler drives high)
-static constexpr int OPT_ACTIVE_LEVEL = HIGH;
+// Logic level when the stock signal is ACTIVE.
+// The optocoupler output sinks current to pull the GPIO LOW when the stock
+// bulb circuit is energised. INPUT_PULLUP keeps lines HIGH at rest (inactive).
+static constexpr int OPT_ACTIVE_LEVEL = LOW;
 
 // Debounce time in milliseconds
 static constexpr unsigned long DEBOUNCE_MS      = 20;  // turn, running
