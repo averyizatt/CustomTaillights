@@ -95,6 +95,7 @@ body {
 .header__icon   { width: 30px; height: 30px; background: var(--accent); border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0; }
 .header__name   { font-size: 17px; font-weight: 700; letter-spacing: -.3px; }
 .header__ip     { font-size: 11px; color: var(--text3); margin-top: 1px; }
+.header__sync   { font-size: 10px; color: var(--text3); margin-top: 1px; }
 .header__badge  { display: flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--text3); background: var(--surf2); padding: 5px 10px; border-radius: 20px; border: 1px solid var(--border); }
 .badge-dot      { width: 7px; height: 7px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
@@ -295,6 +296,7 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
   -webkit-appearance: none;
 }
 .txt-input:focus { border-color: var(--accent); }
+.anim-search { margin-bottom: 10px; }
 
 /* ── Field ──────────────────────────────────────────────────────────────── */
 .field              { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; }
@@ -380,6 +382,7 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
 }
 .anim-tile:active  { transform: scale(.96); }
 .anim-tile--active { background: rgba(227,28,37,.12); border-color: var(--accent); }
+.anim-tile--hidden { display: none; }
 .anim-tile__name   { font-size: 13px; font-weight: 600; line-height: 1.3; }
 .anim-tile__desc   { font-size: 11px; color: var(--text3); line-height: 1.4; }
 
@@ -448,6 +451,7 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
     <div>
       <div class="header__name">Foxbody Taillights</div>
       <div class="header__ip" id="hd-ip">Connecting&hellip;</div>
+      <div class="header__sync" id="hd-sync">Waiting for sync&hellip;</div>
     </div>
   </div>
   <div class="header__badge">
@@ -855,6 +859,7 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
     </div>
     <div class="card-body">
       <div class="field field--last">
+        <input type="text" class="txt-input anim-search" id="show_anim_search" placeholder="Filter show animations" autocomplete="off" spellcheck="false">
         <div class="anim-grid" id="anim-grid">
           <button class="anim-tile" onclick="selectAnim(0)"><span class="anim-tile__name">Rainbow Scroll</span><span class="anim-tile__desc">Hue spectrum scrolls across</span></button>
           <button class="anim-tile" onclick="selectAnim(1)"><span class="anim-tile__name">Comet Chase</span><span class="anim-tile__desc">Bright tail races across</span></button>
@@ -1018,7 +1023,8 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
       </div>
     </div>
     <div class="card-body">
-      <div class="anim-tile-grid">
+      <input type="text" class="txt-input anim-search" id="preview_anim_search" placeholder="Filter preview animations" autocomplete="off" spellcheck="false">
+      <div class="anim-tile-grid" id="preview-anim-grid">
           <button class="anim-tile" onclick="previewShow(0)"><span class="anim-tile__name">Rainbow Scroll</span><span class="anim-tile__desc">Hue spectrum scrolls across</span></button>
           <button class="anim-tile" onclick="previewShow(1)"><span class="anim-tile__name">Comet Chase</span><span class="anim-tile__desc">Bright tail races across</span></button>
           <button class="anim-tile" onclick="previewShow(2)"><span class="anim-tile__name">Theater Chase</span><span class="anim-tile__desc">Marching dots</span></button>
@@ -1089,6 +1095,24 @@ function toast(msg, type) {
   t._tid = setTimeout(function() { t.className = 'toast'; }, 2600);
 }
 
+/* ── Request/sync status ──────────────────────────────────────────────────── */
+var g_loadInFlight = false;
+var g_saveInFlight = false;
+var g_lastSyncMs = 0;
+
+function setSyncStatus(msg) {
+  var el = document.getElementById('hd-sync');
+  if (el) el.textContent = msg;
+}
+
+function updateSyncAge() {
+  if (!g_lastSyncMs) return;
+  var sec = Math.max(0, Math.floor((Date.now() - g_lastSyncMs) / 1000));
+  if (sec < 5) setSyncStatus('Synced just now');
+  else if (sec < 60) setSyncStatus('Synced ' + sec + 's ago');
+  else setSyncStatus('Synced ' + Math.floor(sec / 60) + 'm ago');
+}
+
 /* ── Sliders ─────────────────────────────────────────────────────────────── */
 function bindSlider(id, suffix) {
   var el = document.getElementById(id);
@@ -1120,10 +1144,11 @@ document.getElementById('brightness_dim').addEventListener('change', triggerRest
 
 /* ── Show mode — animation tiles ────────────────────────────────────────── */
 var g_showAnim = 0;
+var g_showAnimTiles = [];
+var g_previewAnimTiles = [];
 function setAnimTile(n) {
   g_showAnim = n;
-  var tiles = document.querySelectorAll('.anim-tile');
-  tiles.forEach(function(t, i) { t.classList.toggle('anim-tile--active', i === n); });
+  g_showAnimTiles.forEach(function(t, i) { t.classList.toggle('anim-tile--active', i === n); });
   var row = document.getElementById('show-text-row');
   if (row) row.style.display = (n === 19) ? '' : 'none';
 }
@@ -1230,10 +1255,9 @@ function previewShow(n) {
   })
   .then(function(r) {
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    var tiles = document.querySelectorAll('#tab-preview .anim-tile');
-    tiles.forEach(function(t, i) { t.classList.toggle('anim-tile--active', i === n); });
+    g_previewAnimTiles.forEach(function(t, i) { t.classList.toggle('anim-tile--active', i === n); });
     setTimeout(function() {
-      tiles.forEach(function(t) { t.classList.remove('anim-tile--active'); });
+      g_previewAnimTiles.forEach(function(t) { t.classList.remove('anim-tile--active'); });
     }, 5100);
     toast('Previewing show effect ' + n);
   })
@@ -1245,6 +1269,25 @@ function updateWifiBlocks() {
   var m = document.getElementById('wifi_mode').value;
   document.getElementById('ap-block').className  = 'wifi-block' + (m === '0' ? ' wifi-block--active' : '');
   document.getElementById('sta-block').className = 'wifi-block' + (m === '1' ? ' wifi-block--active' : '');
+}
+
+/* ── Animation tile filtering ────────────────────────────────────────────── */
+function bindAnimSearch(inputId, tiles) {
+  var input = document.getElementById(inputId);
+  if (!input) return;
+  tiles.forEach(function(tile) {
+    var name = tile.querySelector('.anim-tile__name');
+    var desc = tile.querySelector('.anim-tile__desc');
+    var text = ((name ? name.textContent : '') + ' ' + (desc ? desc.textContent : '')).toLowerCase();
+    tile.dataset.search = text;
+  });
+  input.addEventListener('input', function() {
+    var q = (input.value || '').trim().toLowerCase();
+    tiles.forEach(function(tile) {
+      var show = !q || tile.dataset.search.indexOf(q) !== -1;
+      tile.classList.toggle('anim-tile--hidden', !show);
+    });
+  });
 }
 
 /* ── Lens preset description ─────────────────────────────────────────────── */
@@ -1305,6 +1348,9 @@ function fmtUptime(s) {
 
 /* ── Load settings ───────────────────────────────────────────────────────── */
 function loadSettings() {
+  if (g_loadInFlight || g_saveInFlight || document.hidden) return;
+  g_loadInFlight = true;
+  setSyncStatus('Syncing\u2026');
   fetch('/api/settings')
     .then(function(r) { return r.json(); })
     .then(function(s) {
@@ -1362,8 +1408,14 @@ function loadSettings() {
       document.getElementById('info-ip').textContent     = ip;
       document.getElementById('info-mode').textContent   = mode;
       document.getElementById('info-uptime').textContent = fmtUptime(s.uptime_s || 0);
+      g_lastSyncMs = Date.now();
+      updateSyncAge();
     })
-    .catch(function() { toast('Could not reach device', 'err'); });
+    .catch(function() {
+      setSyncStatus('Sync failed');
+      toast('Could not reach device', 'err');
+    })
+    .finally(function() { g_loadInFlight = false; });
 }
 
 /* ── Collect settings ────────────────────────────────────────────────────── */
@@ -1403,6 +1455,8 @@ function collectSettings() {
 /* ── Save settings ───────────────────────────────────────────────────────── */
 function saveSettings() {
   var btn = document.getElementById('save-btn');
+  var saved = false;
+  g_saveInFlight = true;
   btn.textContent = 'Saving\u2026';
   fetch('/api/settings', {
     method: 'POST',
@@ -1412,10 +1466,16 @@ function saveSettings() {
   .then(function(r) {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     toast('Settings saved \u2713', 'ok');
-    loadSettings();
+    g_lastSyncMs = Date.now();
+    updateSyncAge();
+    saved = true;
   })
   .catch(function(e) { toast('Save failed: ' + e.message, 'err'); })
-  .finally(function() { btn.textContent = 'Save'; });
+  .finally(function() {
+    g_saveInFlight = false;
+    btn.textContent = 'Save';
+    if (saved) loadSettings();
+  });
 }
 
 /* ── Reset defaults ──────────────────────────────────────────────────────── */
@@ -1453,8 +1513,17 @@ function preview(state) {
 }
 
 /* ── Boot ────────────────────────────────────────────────────────────────── */
+g_showAnimTiles = Array.prototype.slice.call(document.querySelectorAll('#anim-grid .anim-tile'));
+g_previewAnimTiles = Array.prototype.slice.call(document.querySelectorAll('#preview-anim-grid .anim-tile'));
+bindAnimSearch('show_anim_search', g_showAnimTiles);
+bindAnimSearch('preview_anim_search', g_previewAnimTiles);
+
 loadSettings();
 setInterval(loadSettings, 15000);
+setInterval(updateSyncAge, 1000);
+document.addEventListener('visibilitychange', function() {
+  if (!document.hidden) loadSettings();
+});
 </script>
 </body>
 </html>
