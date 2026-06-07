@@ -25,16 +25,27 @@ enum class LightState : uint8_t {
 // ---------------------------------------------------------------------------
 // resolveSideState()
 // Derive the LightState for ONE side from that side's four raw boolean inputs
-// plus the OTHER side's turn signal so hazard can be detected.
+// plus the OTHER side's turn/brake/running signals so hazard can be detected
+// without false positives from brake/running back-feed.
 //
 // Priority (highest → lowest):
 //   HAZARD > BRAKE_TURN > BRAKE > TURN > REVERSE > RUNNING > OFF
 // ---------------------------------------------------------------------------
 inline LightState resolveSideState(bool brake, bool running,
                                    bool turn,  bool reverse,
-                                   bool otherTurn)
+                                   bool otherTurn,
+                                   bool otherBrake,
+                                   bool otherRunning)
 {
-    if (turn && otherTurn) return LightState::HAZARD;
+    // Some vehicle wiring can back-feed both turn inputs when both
+    // brake + running circuits are active on both sides. Treat that
+    // case as BRAKE instead of HAZARD.
+    if (turn && otherTurn) {
+        if (brake && running && otherBrake && otherRunning) {
+            return LightState::BRAKE;
+        }
+        return LightState::HAZARD;
+    }
     if (brake && turn)     return LightState::BRAKE_TURN;
     if (brake)             return LightState::BRAKE;
     if (turn)              return LightState::TURN;

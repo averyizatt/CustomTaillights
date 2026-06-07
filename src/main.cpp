@@ -946,11 +946,11 @@ void loop() {
 
     LightState driverState = resolveSideState(
         ds & 0x01, ds & 0x02, ds & 0x04, ds & 0x08,
-        ps & 0x04
+        ps & 0x04, ps & 0x01, ps & 0x02
     );
     LightState passengerState = resolveSideState(
         ps & 0x01, ps & 0x02, ps & 0x04, ps & 0x08,
-        ds & 0x04
+        ds & 0x04, ds & 0x01, ds & 0x02
     );
 
     // ── CAN bus tick (TX broadcast + RX command processing) ─────────────────
