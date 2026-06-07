@@ -86,7 +86,7 @@ static constexpr uint8_t BRIGHTNESS_DIM        =  40;  // running-light level
 // differences, reduce the brighter side's value until both match visually.
 // Driver-side is US left; passenger-side is US right.
 static constexpr uint8_t BRIGHTNESS_SCALE_DRIVER    = 255;
-static constexpr uint8_t BRIGHTNESS_SCALE_PASSENGER = 235;
+static constexpr uint8_t BRIGHTNESS_SCALE_PASSENGER = 255;
 // Minimum brightness enforced under all fault conditions so safety-critical
 // signals (brake, turn) remain visible even if the MCU is overheating.
 static constexpr uint8_t BRIGHTNESS_MIN_SAFETY =  30;
@@ -141,10 +141,11 @@ static constexpr int PIN_PASSENGER_REVERSE = 10;
 static constexpr int OPT_ACTIVE_LEVEL = LOW;
 
 // Debounce time in milliseconds
-static constexpr unsigned long DEBOUNCE_MS      = 20;  // turn, running
+static constexpr unsigned long DEBOUNCE_MS      = 20;  // turn
 static constexpr unsigned long DEBOUNCE_FAST_MS =  5;  // brake, reverse — 5 ms is
                                                         // imperceptible but rejects
                                                         // automotive contact bounce
+static constexpr unsigned long DEBOUNCE_RUNNING_MS = 35; // extra filtering for noisy running-light feeds
 
 // ── Real-time safety infrastructure ─────────────────────────────────────────
 // Hardware Task Watchdog.  Both Core 0 (input task) and Core 1 (render task)

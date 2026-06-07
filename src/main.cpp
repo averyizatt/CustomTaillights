@@ -438,7 +438,7 @@ static void runStartupAnim() {
 // Bench test cycle — cycles through every LightState in sequence so you can
 // verify each animation looks correct without a car harness.
 //
-// ENTRY: Hold PIN_DRIVER_RUNNING (GPIO 6) active at power-on.
+// ENTRY: Hold only PIN_DRIVER_RUNNING (GPIO 6) active at power-on.
 //        The cycle starts automatically after the startup self-test.
 //
 // Each state is held for the indicated duration while Serial prints the
@@ -778,12 +778,23 @@ void setup() {
     inputs.begin();
 
     // ── Bench test cycle entry check ─────────────────────────────────────────
-    // Hold PIN_DRIVER_RUNNING (GPIO 6) active while powering on to run a full
-    // state walk-through before entering normal operation.  Useful for
-    // verifying every animation on the bench without a car harness.
+    // Hold only PIN_DRIVER_RUNNING (GPIO 6) active while powering on to run
+    // a full state walk-through before entering normal operation.  Useful for
+    // verifying every animation on the bench without a car harness while
+    // avoiding accidental entry when both running lights are active in-car.
     // The check is intentionally placed before the self-test so Serial output
     // from runTestCycle() appears immediately after pin-mode init.
-    const bool testModeRequested = (digitalRead(PIN_DRIVER_RUNNING) == OPT_ACTIVE_LEVEL);
+    const bool driverRunningActive    = (digitalRead(PIN_DRIVER_RUNNING)    == OPT_ACTIVE_LEVEL);
+    const bool passengerRunningActive = (digitalRead(PIN_PASSENGER_RUNNING) == OPT_ACTIVE_LEVEL);
+    const bool otherInputsActive =
+        (digitalRead(PIN_DRIVER_BRAKE)    == OPT_ACTIVE_LEVEL) ||
+        (digitalRead(PIN_DRIVER_TURN)     == OPT_ACTIVE_LEVEL) ||
+        (digitalRead(PIN_DRIVER_REVERSE)  == OPT_ACTIVE_LEVEL) ||
+        (digitalRead(PIN_PASSENGER_BRAKE) == OPT_ACTIVE_LEVEL) ||
+        (digitalRead(PIN_PASSENGER_TURN)  == OPT_ACTIVE_LEVEL) ||
+        (digitalRead(PIN_PASSENGER_REVERSE) == OPT_ACTIVE_LEVEL);
+    const bool testModeRequested =
+        driverRunningActive && !passengerRunningActive && !otherInputsActive;
 
     // ── Startup self-test ────────────────────────────────────────────────────
     // Runs the segment ID flash, pixel chaser, and colour verify (~5 s).
