@@ -73,6 +73,7 @@ StatusLed      statusLed;
 
 // ── Timing ───────────────────────────────────────────────────────────────────
 static unsigned long lastFrameMs = 0;
+static constexpr uint8_t INPUT_SIGNAL_MASK = 0x0F; // bit0 brake, bit1 running, bit2 turn, bit3 reverse
 
 // ── Boot-fault state (set in logAndCountReset, reported after CAN is up) ───────
 static esp_reset_reason_t g_bootReason       = ESP_RST_UNKNOWN;
@@ -966,8 +967,8 @@ void loop() {
     uint8_t ds = inputs.driverSnapshot();
     uint8_t ps = inputs.passengerSnapshot();
     if (g_soft_inputs_enabled) {
-        ds |= (g_soft_driver_mask & 0x0F);
-        ps |= (g_soft_passenger_mask & 0x0F);
+        ds |= (g_soft_driver_mask & INPUT_SIGNAL_MASK);
+        ps |= (g_soft_passenger_mask & INPUT_SIGNAL_MASK);
     }
 
     LightState driverState = resolveSideState(

@@ -30,6 +30,7 @@ volatile uint8_t       g_soft_inputs_enabled = 0;
 static WebServer _server(80);
 static DNSServer _dns;
 static bool g_ap_mode_active = false;
+static constexpr unsigned long REST_PULSE_DURATION_MS = 1800UL;
 
 // ---------------------------------------------------------------------------
 // Embedded web page (stored in flash — no SRAM copy needed via send_P)
@@ -1717,7 +1718,7 @@ static void handlePreview() {
     else if (strcmp(s, "rest_pulse")  == 0) {
         ld = LightState::RUNNING;
         lp = LightState::RUNNING;
-        durationMs = 1800UL;
+        durationMs = REST_PULSE_DURATION_MS;
         g_rest_pulse_until_ms = millis() + durationMs;
     }
     else if (strcmp(s, "show")        == 0) {
