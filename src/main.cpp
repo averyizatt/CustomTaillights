@@ -160,6 +160,7 @@ static void onSystemShutdown() {
     fill_solid(ledsPassenger, LEDS_PER_SIDE, CRGB::Black);
     // Solid red on the status LED so it's clear the MCU is restarting.
     statusLed.pixel = CRGB(255, 0, 0);
+    // Force immediate push during reset handling so the fault indication is not skipped.
     ledOutputShow(true);
 }
 

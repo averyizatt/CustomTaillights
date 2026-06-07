@@ -17,7 +17,7 @@ void ledOutputShow(bool force) {
     }
 
     FastLED.show();
-    g_lastShowMs = millis();
+    g_lastShowMs = now;
     g_hasShown   = true;
 }
 
