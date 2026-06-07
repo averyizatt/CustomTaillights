@@ -97,7 +97,7 @@ static constexpr uint8_t BRIGHTNESS_MIN_SAFETY =  30;
 // WS2812B worst-case: 60 mA per LED at full white × 760 LEDs = 45.6 A.
 // Reserve ~500 mA for the ESP32-S3 and logic; assign the rest to LEDs.
 static constexpr uint8_t  LED_VOLTAGE         =   5;      // volts (5 V rail)
-static constexpr uint32_t LED_POWER_BUDGET_MA = 14500;    // mA  (14.5 A of the 15 A supply)
+static constexpr uint32_t LED_POWER_BUDGET_MA = 12000;    // mA  (12.0 A soft cap to reduce supply/transient stress)
 
 // FastLED colour order for these panels
 #define LED_COLOR_ORDER GRB

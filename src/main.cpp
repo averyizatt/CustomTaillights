@@ -748,7 +748,7 @@ void setup() {
     // Disable temporal dithering: it adds CPU jitter and is unsuitable for
     // safety-critical lighting where consistent brightness is required.
     FastLED.setDither(DISABLE_DITHER);
-    // Cap per-frame current draw to LED_POWER_BUDGET_MA (14.5 A).
+    // Cap per-frame current draw to LED_POWER_BUDGET_MA.
     // FastLED calculates estimated draw from pixel colours each frame and
     // scales global brightness down automatically if the budget would be
     // exceeded.  This runs inside FastLED.show() — no manual work needed.
