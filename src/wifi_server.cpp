@@ -22,9 +22,14 @@
 volatile LightState    g_preview_driver    = LightState::OFF;
 volatile LightState    g_preview_passenger = LightState::OFF;
 volatile unsigned long g_preview_until_ms  = 0;
+volatile unsigned long g_rest_pulse_until_ms = 0;
+volatile uint8_t       g_soft_driver_mask    = 0; // bit0 brake, bit1 running, bit2 turn, bit3 reverse
+volatile uint8_t       g_soft_passenger_mask = 0; // bit0 brake, bit1 running, bit2 turn, bit3 reverse
+volatile uint8_t       g_soft_inputs_enabled = 0;
 
 static WebServer _server(80);
 static DNSServer _dns;
+static bool g_ap_mode_active = false;
 
 // ---------------------------------------------------------------------------
 // Embedded web page (stored in flash — no SRAM copy needed via send_P)
@@ -345,6 +350,10 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
   width: 100%;
 }
 .preview-card:active { background: var(--border); transform: scale(.96); }
+.preview-card--active {
+  border-color: var(--accent);
+  background: rgba(227,28,37,.14);
+}
 .preview-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 
 /* ── Animation tiles ───────────────────────────────────────────────────── */
@@ -538,13 +547,24 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
       </div>
     </div>
     <div class="card-body">
-      <div class="toggle-row toggle-row--last">
+      <div class="toggle-row">
         <div class="toggle-label">
           <span>Startup Animation</span>
           <small>Sequential red sweep on every power-on</small>
         </div>
         <label class="toggle">
           <input type="checkbox" id="startup_anim" checked>
+          <span class="toggle__track"></span>
+          <span class="toggle__thumb"></span>
+        </label>
+      </div>
+      <div class="toggle-row toggle-row--last">
+        <div class="toggle-label">
+          <span>Rest Mode</span>
+          <small>Keeps running-light glow active whenever all inputs are idle</small>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="rest_mode" onchange="postRestSettings(true)">
           <span class="toggle__track"></span>
           <span class="toggle__thumb"></span>
         </label>
@@ -689,7 +709,7 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
       </div>
       <div class="field field--last">
         <label class="field__label" for="run_anim">Running Light</label>
-        <select class="select" id="run_anim" onchange="postAnimSettings()">
+        <select class="select" id="run_anim" onchange="postAnimSettings();triggerRestPulse();">
           <option value="0">Dim Solid &mdash; constant dim glow at rest</option>
           <option value="1">Breathe &mdash; slow pulse dim glow</option>
           <option value="2">Shimmer &mdash; subtle per-pixel brightness variation</option>
@@ -878,6 +898,8 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
           Up to 63 characters &bull; A&ndash;Z, 0&ndash;9, spaces, basic punctuation
         </small>
       </div>
+    </div>
+  </div>
 
   <p class="group-label">Speed</p>
   <div class="card">
@@ -939,6 +961,48 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
         <button class="preview-card" onclick="preview('off')">
           <span class="preview-dot" style="background:#3a3a3c"></span>Off
         </button>
+      </div>
+    </div>
+  </div>
+
+  <p class="group-label">Software Inputs</p>
+  <div class="card">
+    <div class="card-hd">
+      <div class="card-icon card-icon--blue"></div>
+      <div>
+        <div class="card-title">Bench Input Toggles</div>
+        <div class="card-desc">Force signal inputs in software for debug testing</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="toggle-row">
+        <div class="toggle-label">
+          <span>Enable Software Inputs</span>
+          <small>When ON, selected toggles are OR'ed with physical input lines</small>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="soft_enable" onchange="postSoftInputs()">
+          <span class="toggle__track"></span>
+          <span class="toggle__thumb"></span>
+        </label>
+      </div>
+      <div class="field">
+        <label class="field__label">Driver Side</label>
+        <div class="preview-grid">
+          <button type="button" id="soft-driver_brake" class="preview-card" onclick="toggleSoft('driver_brake')">Brake</button>
+          <button type="button" id="soft-driver_running" class="preview-card" onclick="toggleSoft('driver_running')">Running</button>
+          <button type="button" id="soft-driver_turn" class="preview-card" onclick="toggleSoft('driver_turn')">Turn</button>
+          <button type="button" id="soft-driver_reverse" class="preview-card" onclick="toggleSoft('driver_reverse')">Reverse</button>
+        </div>
+      </div>
+      <div class="field field--last">
+        <label class="field__label">Passenger Side</label>
+        <div class="preview-grid">
+          <button type="button" id="soft-passenger_brake" class="preview-card" onclick="toggleSoft('passenger_brake')">Brake</button>
+          <button type="button" id="soft-passenger_running" class="preview-card" onclick="toggleSoft('passenger_running')">Running</button>
+          <button type="button" id="soft-passenger_turn" class="preview-card" onclick="toggleSoft('passenger_turn')">Turn</button>
+          <button type="button" id="soft-passenger_reverse" class="preview-card" onclick="toggleSoft('passenger_reverse')">Reverse</button>
+        </div>
       </div>
     </div>
   </div>
@@ -1049,6 +1113,9 @@ bindColor('brake_color',   'brake_hex');
 bindColor('turn_color',    'turn_hex');
 bindColor('reverse_color', 'reverse_hex');
 bindColor('run_color',     'run_hex');
+document.getElementById('run_color').addEventListener('input', triggerRestPulse);
+document.getElementById('run_hex').addEventListener('change', triggerRestPulse);
+document.getElementById('brightness_dim').addEventListener('change', triggerRestPulse);
 
 /* ── Show mode — animation tiles ────────────────────────────────────────── */
 var g_showAnim = 0;
@@ -1088,6 +1155,69 @@ function postAnimSettings() {
       run_anim:     +document.getElementById('run_anim').value
     })
   }).catch(function() {});
+}
+
+/* ── Rest mode ───────────────────────────────────────────────────────────── */
+var restPulseTimer = null;
+function triggerRestPulse() {
+  clearTimeout(restPulseTimer);
+  restPulseTimer = setTimeout(function() { preview('rest_pulse'); }, 120);
+}
+function postRestSettings(withPulse) {
+  fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      rest_mode: document.getElementById('rest_mode').checked ? 1 : 0
+    })
+  })
+  .then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (withPulse) preview('rest_pulse');
+  })
+  .catch(function() {});
+}
+
+/* ── Software input toggles ──────────────────────────────────────────────── */
+var g_softInputs = {
+  driver_brake: false, driver_running: false, driver_turn: false, driver_reverse: false,
+  passenger_brake: false, passenger_running: false, passenger_turn: false, passenger_reverse: false
+};
+function setSoftButtonState(name) {
+  var el = document.getElementById('soft-' + name);
+  if (!el) return;
+  el.classList.toggle('preview-card--active', !!g_softInputs[name]);
+}
+function toggleSoft(name) {
+  g_softInputs[name] = !g_softInputs[name];
+  setSoftButtonState(name);
+  postSoftInputs();
+}
+function postSoftInputs() {
+  fetch('/api/test_inputs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      enabled: document.getElementById('soft_enable').checked ? 1 : 0,
+      driver: {
+        brake: g_softInputs.driver_brake ? 1 : 0,
+        running: g_softInputs.driver_running ? 1 : 0,
+        turn: g_softInputs.driver_turn ? 1 : 0,
+        reverse: g_softInputs.driver_reverse ? 1 : 0
+      },
+      passenger: {
+        brake: g_softInputs.passenger_brake ? 1 : 0,
+        running: g_softInputs.passenger_running ? 1 : 0,
+        turn: g_softInputs.passenger_turn ? 1 : 0,
+        reverse: g_softInputs.passenger_reverse ? 1 : 0
+      }
+    })
+  })
+  .then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    toast('Software input test updated', 'ok');
+  })
+  .catch(function(e) { toast('Software input update failed: ' + e.message, 'err'); });
 }
 
 /* ── Show animation preview ─────────────────────────────────────────────── */
@@ -1196,6 +1326,7 @@ function loadSettings() {
         updateLensDesc();
       }
       if (s.startup_anim != null) document.getElementById('startup_anim').checked = !!s.startup_anim;
+      if (s.rest_mode   != null) document.getElementById('rest_mode').checked = !!s.rest_mode;
 
       if (s.show_mode  != null) document.getElementById('show_mode').checked = !!s.show_mode;
       if (s.show_anim  != null) setAnimTile(s.show_anim);
@@ -1209,10 +1340,24 @@ function loadSettings() {
       document.getElementById('sta_pass').value  = '';
       updateWifiBlocks();
 
-      var ip   = s.ip || '--';
-      var mode = s.wifi_mode === 0 ? 'Access Point' : 'Station';
+      document.getElementById('soft_enable').checked = !!s.soft_inputs_enabled;
+      var dm = (+s.soft_driver_mask) || 0;
+      var pm = (+s.soft_passenger_mask) || 0;
+      g_softInputs.driver_brake      = !!(dm & 0x01);
+      g_softInputs.driver_running    = !!(dm & 0x02);
+      g_softInputs.driver_turn       = !!(dm & 0x04);
+      g_softInputs.driver_reverse    = !!(dm & 0x08);
+      g_softInputs.passenger_brake   = !!(pm & 0x01);
+      g_softInputs.passenger_running = !!(pm & 0x02);
+      g_softInputs.passenger_turn    = !!(pm & 0x04);
+      g_softInputs.passenger_reverse = !!(pm & 0x08);
+      Object.keys(g_softInputs).forEach(setSoftButtonState);
+
+      var ip = s.ip || '--';
+      var activeAp = (s.wifi_ap_active != null) ? !!s.wifi_ap_active : (s.wifi_mode === 0);
+      var mode = activeAp ? 'Access Point' : 'Station';
       document.getElementById('hd-ip').textContent       = ip;
-      document.getElementById('hd-mode').textContent     = s.wifi_mode === 0 ? 'AP' : 'STA';
+      document.getElementById('hd-mode').textContent     = activeAp ? 'AP' : 'STA';
       document.getElementById('info-ip').textContent     = ip;
       document.getElementById('info-mode').textContent   = mode;
       document.getElementById('info-uptime').textContent = fmtUptime(s.uptime_s || 0);
@@ -1241,6 +1386,7 @@ function collectSettings() {
     run_anim:     +document.getElementById('run_anim').value,
     lens_preset:  +document.getElementById('lens_preset').value,
     startup_anim:  document.getElementById('startup_anim').checked ? 1 : 0,
+    rest_mode:     document.getElementById('rest_mode').checked ? 1 : 0,
     show_mode:  document.getElementById('show_mode').checked ? 1 : 0,
     show_anim:  g_showAnim,
     show_speed: +document.getElementById('show_speed').value,
@@ -1327,6 +1473,9 @@ static void addCorsHeaders() {
 // GET /
 // ---------------------------------------------------------------------------
 static void handleRoot() {
+    _server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+    _server.sendHeader("Pragma", "no-cache");
+    _server.sendHeader("Expires", "0");
     _server.send_P(200, "text/html", INDEX_HTML);
 }
 
@@ -1365,6 +1514,7 @@ static void handleGetSettings() {
     doc["run_anim"]     = g_settings.run_anim;
     doc["lens_preset"]  = g_settings.lens_preset;
     doc["startup_anim"] = g_settings.startup_anim;
+    doc["rest_mode"]    = g_settings.rest_mode;
 
     doc["show_mode"]  = g_settings.show_mode;
     doc["show_anim"]  = g_settings.show_anim;
@@ -1372,13 +1522,18 @@ static void handleGetSettings() {
     doc["show_text"]  = g_settings.show_text;
 
     doc["wifi_mode"] = g_settings.wifi_mode;
+    doc["wifi_ap_active"] = g_ap_mode_active ? 1 : 0;
     doc["ap_ssid"]   = g_settings.ap_ssid;
     doc["ap_pass"]   = "";          // never echo passwords
     doc["sta_ssid"]  = g_settings.sta_ssid;
     doc["sta_pass"]  = "";
 
+    doc["soft_inputs_enabled"] = g_soft_inputs_enabled ? 1 : 0;
+    doc["soft_driver_mask"]    = g_soft_driver_mask;
+    doc["soft_passenger_mask"] = g_soft_passenger_mask;
+
     doc["uptime_s"]  = millis() / 1000UL;
-    doc["ip"]        = (g_settings.wifi_mode == 0)
+    doc["ip"]        = g_ap_mode_active
                        ? WiFi.softAPIP().toString()
                        : WiFi.localIP().toString();
 
@@ -1444,6 +1599,8 @@ static void handlePostSettings() {
     if (doc["run_b"].is<int>()) g_settings.run_b = (uint8_t)constrain(doc["run_b"].as<int>(), 0, 255);
     if (doc["startup_anim"].is<int>())
         g_settings.startup_anim = (uint8_t)constrain(doc["startup_anim"].as<int>(), 0, 1);
+    if (doc["rest_mode"].is<int>())
+        g_settings.rest_mode    = (uint8_t)constrain(doc["rest_mode"].as<int>(), 0, 1);
 
     if (doc["show_mode"].is<int>())
         g_settings.show_mode  = (uint8_t)constrain(doc["show_mode"].as<int>(), 0, 1);
@@ -1522,7 +1679,8 @@ static void handleReboot() {
 // ---------------------------------------------------------------------------
 // POST /api/preview
 // Body: { "state": "brake" | "left_turn" | "right_turn" | "reverse" |
-//                  "hazard" | "brake_left" | "brake_right" | "off" }
+//                  "hazard" | "brake_left" | "brake_right" | "running" |
+//                  "rest_pulse" | "show" | "off" }
 // Overrides the light state for 3 seconds so the user can preview animations
 // with the current color settings without triggering physical inputs.
 // ---------------------------------------------------------------------------
@@ -1547,6 +1705,7 @@ static void handlePreview() {
     LightState ld = LightState::OFF;
     LightState lp = LightState::OFF;
     unsigned long durationMs = 3000UL;
+    g_rest_pulse_until_ms = 0;
     if      (strcmp(s, "brake")       == 0) { ld = LightState::BRAKE;      lp = LightState::BRAKE; }
     else if (strcmp(s, "left_turn")   == 0) { ld = LightState::TURN;       lp = LightState::OFF; }
     else if (strcmp(s, "right_turn")  == 0) { ld = LightState::OFF;        lp = LightState::TURN; }
@@ -1555,6 +1714,12 @@ static void handlePreview() {
     else if (strcmp(s, "brake_left")  == 0) { ld = LightState::BRAKE_TURN; lp = LightState::BRAKE; }
     else if (strcmp(s, "brake_right") == 0) { ld = LightState::BRAKE;      lp = LightState::BRAKE_TURN; }
     else if (strcmp(s, "running")     == 0) { ld = LightState::RUNNING;    lp = LightState::RUNNING; }
+    else if (strcmp(s, "rest_pulse")  == 0) {
+        ld = LightState::RUNNING;
+        lp = LightState::RUNNING;
+        durationMs = 1800UL;
+        g_rest_pulse_until_ms = millis() + durationMs;
+    }
     else if (strcmp(s, "show")        == 0) {
         // Optional anim index — update show_anim so the correct effect plays
         if (doc["anim"].is<int>()) {
@@ -1574,6 +1739,62 @@ static void handlePreview() {
 }
 
 // ---------------------------------------------------------------------------
+// POST /api/test_inputs
+// Body:
+// {
+//   "enabled": 0|1,
+//   "driver":    {"brake":0|1,"running":0|1,"turn":0|1,"reverse":0|1},
+//   "passenger": {"brake":0|1,"running":0|1,"turn":0|1,"reverse":0|1}
+// }
+// Lets the UI force software input bits ON for bench debugging.
+// ---------------------------------------------------------------------------
+static void handleTestInputs() {
+    if (!_server.hasArg("plain")) {
+        _server.send(400, "application/json", "{\"error\":\"Empty body\"}");
+        return;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, _server.arg("plain"))) {
+        _server.send(400, "application/json", "{\"error\":\"Bad JSON\"}");
+        return;
+    }
+
+    auto asBool = [](JsonVariantConst v) -> bool {
+        if (v.is<bool>()) return v.as<bool>();
+        if (v.is<int>())  return v.as<int>() != 0;
+        return false;
+    };
+
+    if (doc["enabled"].is<bool>() || doc["enabled"].is<int>()) {
+        g_soft_inputs_enabled = asBool(doc["enabled"]) ? 1 : 0;
+    }
+
+    if (doc["driver"].is<JsonObjectConst>()) {
+        JsonObjectConst d = doc["driver"].as<JsonObjectConst>();
+        uint8_t mask = 0;
+        if (asBool(d["brake"]))   mask |= 0x01;
+        if (asBool(d["running"])) mask |= 0x02;
+        if (asBool(d["turn"]))    mask |= 0x04;
+        if (asBool(d["reverse"])) mask |= 0x08;
+        g_soft_driver_mask = mask;
+    }
+
+    if (doc["passenger"].is<JsonObjectConst>()) {
+        JsonObjectConst p = doc["passenger"].as<JsonObjectConst>();
+        uint8_t mask = 0;
+        if (asBool(p["brake"]))   mask |= 0x01;
+        if (asBool(p["running"])) mask |= 0x02;
+        if (asBool(p["turn"]))    mask |= 0x04;
+        if (asBool(p["reverse"])) mask |= 0x08;
+        g_soft_passenger_mask = mask;
+    }
+
+    addCorsHeaders();
+    _server.send(200, "application/json", "{\"ok\":true}");
+}
+
+// ---------------------------------------------------------------------------
 // Global WifiServer instance
 // ---------------------------------------------------------------------------
 WifiServer wifiServer;
@@ -1581,11 +1802,13 @@ WifiServer wifiServer;
 // ---------------------------------------------------------------------------
 void WifiServer::begin() {
     Serial.println(F("[wifi] starting..."));
+    g_ap_mode_active = false;
 
     if (g_settings.wifi_mode == 0) {
         // ── Access Point mode ────────────────────────────────────────────────
         WiFi.mode(WIFI_AP);
         WiFi.softAP(g_settings.ap_ssid, g_settings.ap_pass);
+        g_ap_mode_active = true;
         Serial.print(F("[wifi] AP \""));
         Serial.print(g_settings.ap_ssid);
         Serial.print(F("\"  IP: "));
@@ -1613,6 +1836,7 @@ void WifiServer::begin() {
             Serial.println(F("\n[wifi] connection failed — falling back to AP"));
             WiFi.mode(WIFI_AP);
             WiFi.softAP(g_settings.ap_ssid, g_settings.ap_pass);
+            g_ap_mode_active = true;
             Serial.print(F("[wifi] AP fallback IP: "));
             Serial.println(WiFi.softAPIP());
         }
@@ -1626,6 +1850,17 @@ void WifiServer::begin() {
     _server.on("/api/reset",      HTTP_POST, handleReset);
     _server.on("/api/reboot",     HTTP_POST, handleReboot);
     _server.on("/api/preview",    HTTP_POST, handlePreview);
+    _server.on("/api/test_inputs", HTTP_POST, handleTestInputs);
+
+    // Common captive-portal probe URLs used by Android / iOS / Windows.
+    auto captive = []() { handleRoot(); };
+    _server.on("/generate_204",             HTTP_GET, captive);
+    _server.on("/gen_204",                  HTTP_GET, captive);
+    _server.on("/hotspot-detect.html",      HTTP_GET, captive);
+    _server.on("/library/test/success.html",HTTP_GET, captive);
+    _server.on("/ncsi.txt",                 HTTP_GET, captive);
+    _server.on("/connecttest.txt",          HTTP_GET, captive);
+    _server.on("/fwlink",                   HTTP_GET, captive);
 
     // Captive-portal + CORS fallback
     _server.onNotFound([]() {
@@ -1633,13 +1868,14 @@ void WifiServer::begin() {
             addCorsHeaders();
             _server.send(204);
         } else {
-            // Any unknown URL → redirect to the settings page (captive portal).
-            _server.sendHeader("Location", "http://" +
-                (g_settings.wifi_mode == 0
-                    ? WiFi.softAPIP().toString()
-                    : WiFi.localIP().toString()),
-                true);
-            _server.send(302, "text/plain", "");
+            // In AP mode, serve the settings page for unknown URLs so captive
+            // assistants stay on-device. In STA mode, keep a normal redirect.
+            if (g_ap_mode_active) {
+                handleRoot();
+            } else {
+                _server.sendHeader("Location", "http://" + WiFi.localIP().toString(), true);
+                _server.send(302, "text/plain", "");
+            }
         }
     });
 
@@ -1647,7 +1883,7 @@ void WifiServer::begin() {
     // Resolves all DNS queries to our own IP so the phone's captive-portal
     // detection triggers automatically and the user sees the settings page
     // without having to type an IP address.
-    if (g_settings.wifi_mode == 0) {
+    if (g_ap_mode_active) {
         _dns.start(53, "*", WiFi.softAPIP());
         Serial.println(F("[wifi] DNS captive portal started"));
     }
@@ -1658,6 +1894,6 @@ void WifiServer::begin() {
 
 // ---------------------------------------------------------------------------
 void WifiServer::handle() {
-    if (g_settings.wifi_mode == 0) _dns.processNextRequest();
+    if (g_ap_mode_active) _dns.processNextRequest();
     _server.handleClient();
 }
