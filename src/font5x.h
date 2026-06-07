@@ -68,7 +68,7 @@ void font5x_buildBuffer(const char* text,
 //   bgColour — fill colour for SEG_BOT_STRIP and SEG_MAIN while scrolling
 //              (only the red channel passes through those red diffusers)
 //   scrollMs — milliseconds per column step
-// Calls FastLED.show() and delay() — only suitable for setup() / demo context.
+// Calls centralized LED output + delay() — only suitable for setup() / demo context.
 // ---------------------------------------------------------------------------
 void font5x_scroll(CRGB*       ledsDriver,
                    CRGB*       ledsPassenger,

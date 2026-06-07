@@ -108,8 +108,13 @@ Input polling runs at 1 ms on Core 0, completely independent of LED render time 
 ### Crank holdoff
 After every boot the controller waits **1.5 seconds** with LEDs blank before proceeding. If a voltage sag during engine cranking resets the ESP32, it simply restarts the holdoff. Set `CRANK_HOLDOFF_MS` in `config.h` to adjust (or `0` to disable). The onboard status LED blinks blue during this window.
 
-### WiFi & BLE disabled
-This device communicates exclusively over CAN bus. WiFi and BLE are disabled at the start of `setup()` to reduce idle current (~80 mA saved), free heap, and eliminate the RF drivers as a crash source in the automotive EMI environment.
+### BLE disabled
+BLE is disabled and de-initialized at the start of `setup()` to free heap and remove Bluetooth RF stack timing overhead. WiFi remains available for the web settings UI.
+
+### LED timing hardening
+- All LED hardware pushes route through a centralized output helper.
+- Hardware updates are hard-limited to **50 FPS max** (`LED_SHOW_MIN_INTERVAL_MS = 20`).
+- FastLED uses the ESP32 RMTv5 backend (`FASTLED_RMT5=1`) for reliable WS2812 timing under concurrent CAN/WiFi/web activity.
 
 ### NVS write minimisation
 Flash is only written when a fault reset (WDT, panic, brownout) occurs — not on every normal power-on. This keeps NVS erase cycles to a minimum over the life of the device.

@@ -203,6 +203,8 @@ static constexpr unsigned long CAN_BROADCAST_INTERVAL_MS = 100;
 // ── Animation timing ─────────────────────────────────────────────────────────
 // How often the main loop calls the active animation's update() method.
 static constexpr unsigned long FRAME_INTERVAL_MS = 16;   // ~60 fps
+// Hard cap for hardware LED pushes so show() never exceeds 50 FPS.
+static constexpr unsigned long LED_SHOW_MIN_INTERVAL_MS = 20;  // 1000/50
 
 // Turn-signal blink period (total on+off cycle), milliseconds
 static constexpr unsigned long TURN_BLINK_PERIOD_MS = 600;

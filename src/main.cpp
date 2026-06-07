@@ -28,6 +28,8 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <esp_idf_version.h>
+#include <esp_bt.h>
+#include <esp_bt_main.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 #include <freertos/FreeRTOS.h>
@@ -45,6 +47,7 @@
 #include "status_led.h"
 #include "settings.h"
 #include "wifi_server.h"
+#include "led_output.h"
 
 // Preview state set by POST /api/preview in wifi_server.cpp.
 // Applied in loop() to let the web UI trigger live light previews.
@@ -157,7 +160,7 @@ static void onSystemShutdown() {
     fill_solid(ledsPassenger, LEDS_PER_SIDE, CRGB::Black);
     // Solid red on the status LED so it's clear the MCU is restarting.
     statusLed.pixel = CRGB(255, 0, 0);
-    FastLED.show();
+    ledOutputShow(true);
 }
 
 // ===========================================================================
@@ -241,13 +244,13 @@ static void st_flashSegment(int seg, CRGB colour, uint32_t holdMs) {
         ledsDriver[i]  = colour;
         ledsPassenger[i] = colour;
     }
-    FastLED.show();
+    ledOutputShow();
     delay(holdMs);
     for (int i = base; i < base + count; i++) {
         ledsDriver[i]  = CRGB::Black;
         ledsPassenger[i] = CRGB::Black;
     }
-    FastLED.show();
+    ledOutputShow();
     delay(100);
 }
 
@@ -296,7 +299,7 @@ static void st_chaserTest() {
                 ledsPassenger[idx] = CRGB(bright, bright, bright);
             }
         }
-        FastLED.show();
+        ledOutputShow();
         delay(6);  // ~166 px/sec — visually readable chase speed
     }
 }
@@ -313,10 +316,10 @@ static void st_colorVerify() {
         Serial.print(F("  Colour: ")); Serial.println(names[i]);
         fill_solid(ledsDriver,  LEDS_PER_SIDE, cols[i]);
         fill_solid(ledsPassenger, LEDS_PER_SIDE, cols[i]);
-        FastLED.show();
+        ledOutputShow();
         delay(350);
     }
-    FastLED.clear(true);
+    ledOutputClear();
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +394,7 @@ static void runStartupAnim() {
                 }
             }
         }
-        FastLED.show();
+        ledOutputShow();
         delay(17);
     }
 
@@ -415,7 +418,7 @@ static void runStartupAnim() {
                 }
             }
         }
-        FastLED.show();
+        ledOutputShow();
         delay(8);
     }
 
@@ -426,12 +429,12 @@ static void runStartupAnim() {
             ledsDriver[i]  = CRGB((uint8_t)((ledsDriver[i].r  * scale) >> 8), 0, 0);
             ledsPassenger[i] = CRGB((uint8_t)((ledsPassenger[i].r * scale) >> 8), 0, 0);
         }
-        FastLED.show();
+        ledOutputShow();
         delay(18);
     }
     fill_solid(ledsDriver,  LEDS_PER_SIDE, CRGB::Black);
     fill_solid(ledsPassenger, LEDS_PER_SIDE, CRGB::Black);
-    FastLED.show();
+    ledOutputShow();
 }
 
 // ===========================================================================
@@ -489,7 +492,7 @@ static void runTestCycle() {
             unsigned long now = millis();
             driverPanel.update(s.left,  now);
             passengerPanel.update(s.right, now);
-            FastLED.show();
+            ledOutputShow();
             delay(16);
         }
     }
@@ -503,7 +506,7 @@ static void runTestCycle() {
 
     driverPanel.fill(CRGB::Black);
     passengerPanel.fill(CRGB::Black);
-    FastLED.show();
+    ledOutputShow();
     delay(200);
 }
 
@@ -522,10 +525,10 @@ static void demo_rainbowRiver() {
             ledsDriver[i]  = CHSV(hueL, 230, 200);
             ledsPassenger[i] = CHSV(hueR, 230, 200);
         }
-        FastLED.show();
+        ledOutputShow();
         delay(frameMs);
     }
-    FastLED.clear(true);
+    ledOutputClear();
     delay(80);
 }
 
@@ -558,7 +561,7 @@ static void demo_mirrorBolt() {
             uint8_t b = 255 - (uint8_t)(t * 255 / TAIL);
             drawBolt(CENTER + offset, CENTER - offset, b);
         }
-        FastLED.show();
+        ledOutputShow();
         delay(frameMs);
     }
 
@@ -572,10 +575,10 @@ static void demo_mirrorBolt() {
             uint8_t b = 255 - (uint8_t)(t * 255 / TAIL);
             drawBolt((LEDS_PER_SIDE - 1) - offset, offset, b);
         }
-        FastLED.show();
+        ledOutputShow();
         delay(frameMs);
     }
-    FastLED.clear(true);
+    ledOutputClear();
     delay(80);
 }
 
@@ -591,10 +594,10 @@ static void demo_theaterChase() {
             ledsDriver[i]  = ((i + step)          % 3 == 0) ? CRGB(220, 30, 0) : CRGB::Black;
             ledsPassenger[i] = ((i - step + 3 * 100) % 3 == 0) ? CRGB(220, 30, 0) : CRGB::Black;
         }
-        FastLED.show();
+        ledOutputShow();
         delay(frameMs);
     }
-    FastLED.clear(true);
+    ledOutputClear();
     delay(80);
 }
 
@@ -610,10 +613,10 @@ static void demo_breathe() {
         CRGB col(b, 0, (uint8_t)(b >> 1));  // deep magenta / purple
         fill_solid(ledsDriver,  LEDS_PER_SIDE, col);
         fill_solid(ledsPassenger, LEDS_PER_SIDE, col);
-        FastLED.show();
+        ledOutputShow();
         delay(frameMs);
     }
-    FastLED.clear(true);
+    ledOutputClear();
     delay(80);
 }
 
@@ -627,7 +630,7 @@ static void demo_fireFlash() {
         CRGB col(255, (uint8_t)(p >> 2), 0);
         fill_solid(ledsDriver,  LEDS_PER_SIDE, col);
         fill_solid(ledsPassenger, LEDS_PER_SIDE, col);
-        FastLED.show();
+        ledOutputShow();
         delay(frameMs);
     }
     // White burst (250 ms)
@@ -636,7 +639,7 @@ static void demo_fireFlash() {
         CRGB col(255, p, p);
         fill_solid(ledsDriver,  LEDS_PER_SIDE, col);
         fill_solid(ledsPassenger, LEDS_PER_SIDE, col);
-        FastLED.show();
+        ledOutputShow();
         delay(frameMs);
     }
     // Fade out (450 ms)
@@ -645,10 +648,10 @@ static void demo_fireFlash() {
         CRGB col(p, p, p);
         fill_solid(ledsDriver,  LEDS_PER_SIDE, col);
         fill_solid(ledsPassenger, LEDS_PER_SIDE, col);
-        FastLED.show();
+        ledOutputShow();
         delay(frameMs);
     }
-    FastLED.clear(true);
+    ledOutputClear();
 }
 
 // ── Scene 6: Scrolling text on the top strip ─────────────────────────────────
@@ -713,6 +716,20 @@ static void inputTaskFn(void* /*param*/) {
 void setup() {
     // BLE is not used by this firmware — disable it to recover heap.
     btStop();
+#if defined(CONFIG_BT_ENABLED) && CONFIG_BT_ENABLED
+    if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_ENABLED) {
+        esp_bluedroid_disable();
+    }
+    if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_INITIALIZED) {
+        esp_bluedroid_deinit();
+    }
+    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED) {
+        esp_bt_controller_disable();
+    }
+    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_INITED) {
+        esp_bt_controller_deinit();
+    }
+#endif
 
     Serial.begin(115200);
     // ── Load persisted settings (NVS) ────────────────────────────────────────────
@@ -744,7 +761,7 @@ void setup() {
     statusLed.begin();  // state = BOOT, pixel = Black
 
     FastLED.setBrightness(g_settings.brightness);
-    FastLED.clear(true);
+    ledOutputClear();
     // Disable temporal dithering: it adds CPU jitter and is unsuitable for
     // safety-critical lighting where consistent brightness is required.
     FastLED.setDither(DISABLE_DITHER);
@@ -766,7 +783,7 @@ void setup() {
             // Animate the status LED (slow blue blink) so there is a visible
             // sign of life during the holdoff window.
             statusLed.tick(millis());
-            FastLED.show();
+            ledOutputShow();
             delay(10);
         }
         Serial.println(F("[boot] holdoff complete — supply stable"));
@@ -1027,8 +1044,12 @@ void loop() {
         statusLed.setState(desired);
     }
 
-    // Throttle animation updates to g_settings.frame_ms (~60 fps default)
-    if (nowMs - lastFrameMs >= g_settings.frame_ms) {
+    // Throttle animation updates to settings frame time, but never above 50 FPS.
+    const uint8_t frameIntervalMs =
+        (g_settings.frame_ms < LED_SHOW_MIN_INTERVAL_MS)
+            ? LED_SHOW_MIN_INTERVAL_MS
+            : g_settings.frame_ms;
+    if (nowMs - lastFrameMs >= frameIntervalMs) {
         lastFrameMs = nowMs;
 
         driverPanel.update(driverState, nowMs);
@@ -1036,6 +1057,6 @@ void loop() {
 
         // Tick the status LED and push all controllers together in one show()
         statusLed.tick(nowMs);
-        FastLED.show();
+        ledOutputShow();
     }
 }

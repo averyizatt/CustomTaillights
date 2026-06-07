@@ -12,6 +12,7 @@
 // ---------------------------------------------------------------------------
 
 #include "font5x.h"
+#include "led_output.h"
 
 // ===========================================================================
 // Glyph table
@@ -199,9 +200,9 @@ void font5x_scroll(CRGB*       ledsDriver,
         fill_solid(ledsDriver  + SEG_OFFSET[SEG_MAIN],      MAIN_LEDS,  bgColour);
         fill_solid(ledsPassenger + SEG_OFFSET[SEG_MAIN],      MAIN_LEDS,  bgColour);
 
-        FastLED.show();
+        ledOutputShow();
         delay(scrollMs);
     }
 
-    FastLED.clear(true);
+    ledOutputClear();
 }
