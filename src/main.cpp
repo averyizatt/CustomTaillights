@@ -192,7 +192,7 @@ static void st_printConfig() {
     Serial.print(F(" rows = "));            Serial.print(MAIN_LEDS);  Serial.println(F(" px"));
     Serial.print(F("  Frame rate     : ~"));
     Serial.print(1000UL / FRAME_INTERVAL_MS); Serial.println(F(" fps"));
-    Serial.println(F("  --- Inputs (active-LOW via optocouplers) ---"));
+    Serial.println(F("  --- Inputs (active-HIGH via optocouplers) ---"));
     Serial.println(F("  Left opto:"));
     Serial.print(F("    Brake        : GPIO")); Serial.println(PIN_DRIVER_BRAKE);
     Serial.print(F("    Running      : GPIO")); Serial.println(PIN_DRIVER_RUNNING);
