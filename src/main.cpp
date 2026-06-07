@@ -1046,7 +1046,7 @@ void loop() {
     }
 
     // Throttle animation updates to settings frame time, but never above 50 FPS.
-    const uint8_t frameIntervalMs =
+    const unsigned long frameIntervalMs =
         (g_settings.frame_ms < LED_SHOW_MIN_INTERVAL_MS)
             ? LED_SHOW_MIN_INTERVAL_MS
             : g_settings.frame_ms;
