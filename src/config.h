@@ -86,7 +86,7 @@ static constexpr uint8_t BRIGHTNESS_DIM        =  40;  // running-light level
 // differences, reduce the brighter side's value until both match visually.
 // Driver-side is US left; passenger-side is US right.
 static constexpr uint8_t BRIGHTNESS_SCALE_DRIVER    = 255;
-static constexpr uint8_t BRIGHTNESS_SCALE_PASSENGER = 235;
+static constexpr uint8_t BRIGHTNESS_SCALE_PASSENGER = 255;
 // Minimum brightness enforced under all fault conditions so safety-critical
 // signals (brake, turn) remain visible even if the MCU is overheating.
 static constexpr uint8_t BRIGHTNESS_MIN_SAFETY =  30;
@@ -97,7 +97,7 @@ static constexpr uint8_t BRIGHTNESS_MIN_SAFETY =  30;
 // WS2812B worst-case: 60 mA per LED at full white × 760 LEDs = 45.6 A.
 // Reserve ~500 mA for the ESP32-S3 and logic; assign the rest to LEDs.
 static constexpr uint8_t  LED_VOLTAGE         =   5;      // volts (5 V rail)
-static constexpr uint32_t LED_POWER_BUDGET_MA = 14500;    // mA  (14.5 A of the 15 A supply)
+static constexpr uint32_t LED_POWER_BUDGET_MA = 12000;    // mA  (12.0 A soft cap to reduce supply/transient stress)
 
 // FastLED colour order for these panels
 #define LED_COLOR_ORDER GRB
@@ -105,8 +105,8 @@ static constexpr uint32_t LED_POWER_BUDGET_MA = 14500;    // mA  (14.5 A of the 
 
 // ── Optocoupler inputs ───────────────────────────────────────────────────────
 // Two 4-channel optocouplers, one per side.
-// Each coupler output pulls its GPIO LOW when the stock bulb supply is ON.
-// All GPIOs are configured INPUT_PULLUP so lines are HIGH (inactive) at rest.
+// Each coupler output drives its GPIO HIGH when the stock bulb supply is ON.
+// All GPIOs are configured INPUT_PULLDOWN so lines are LOW (inactive) at rest.
 //
 // Signal → opto channel mapping (same on both sides):
 //   O1 → Brake
@@ -136,15 +136,16 @@ static constexpr int PIN_PASSENGER_TURN    =  3;
 static constexpr int PIN_PASSENGER_REVERSE = 10;
 
 // Logic level when the stock signal is ACTIVE.
-// The optocoupler output sinks current to pull the GPIO LOW when the stock
-// bulb circuit is energised. INPUT_PULLUP keeps lines HIGH at rest (inactive).
-static constexpr int OPT_ACTIVE_LEVEL = LOW;
+// The optocoupler output drives HIGH when the stock bulb circuit is energised.
+// INPUT_PULLDOWN keeps lines LOW at rest (inactive).
+static constexpr int OPT_ACTIVE_LEVEL = HIGH;
 
 // Debounce time in milliseconds
-static constexpr unsigned long DEBOUNCE_MS      = 20;  // turn, running
+static constexpr unsigned long DEBOUNCE_MS      = 20;  // turn
 static constexpr unsigned long DEBOUNCE_FAST_MS =  5;  // brake, reverse — 5 ms is
                                                         // imperceptible but rejects
                                                         // automotive contact bounce
+static constexpr unsigned long DEBOUNCE_RUNNING_MS = 35; // extra filtering for noisy running-light feeds
 
 // ── Real-time safety infrastructure ─────────────────────────────────────────
 // Hardware Task Watchdog.  Both Core 0 (input task) and Core 1 (render task)
@@ -202,6 +203,8 @@ static constexpr unsigned long CAN_BROADCAST_INTERVAL_MS = 100;
 // ── Animation timing ─────────────────────────────────────────────────────────
 // How often the main loop calls the active animation's update() method.
 static constexpr unsigned long FRAME_INTERVAL_MS = 16;   // ~60 fps
+// Hard cap for hardware LED pushes so show() never exceeds 50 FPS.
+static constexpr unsigned long LED_SHOW_MIN_INTERVAL_MS = 20;  // 1000/50
 
 // Turn-signal blink period (total on+off cycle), milliseconds
 static constexpr unsigned long TURN_BLINK_PERIOD_MS = 600;
