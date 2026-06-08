@@ -1275,7 +1275,9 @@ function postDisplaySettings() {
     g_lastSyncMs = Date.now();
     updateSyncAge();
   })
-  .catch(function() {});
+  .catch(function(e) {
+    console.warn('Display auto-save failed:', e && e.message ? e.message : e);
+  });
 }
 var brightnessEl = document.getElementById('brightness');
 if (brightnessEl) brightnessEl.addEventListener('change', postDisplaySettings);
