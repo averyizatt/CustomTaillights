@@ -1264,7 +1264,10 @@ function postDisplaySettings() {
   var brightnessDimEl = document.getElementById('brightness_dim');
   var lensPresetEl = document.getElementById('lens_preset');
   var startupAnimEl = document.getElementById('startup_anim');
-  if (!brightnessEl || !brightnessDimEl || !lensPresetEl || !startupAnimEl) return;
+  if (!brightnessEl || !brightnessDimEl || !lensPresetEl || !startupAnimEl) {
+    console.warn('Display auto-save skipped: missing one or more display controls');
+    return;
+  }
   fetch('/api/settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
