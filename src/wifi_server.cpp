@@ -1260,14 +1260,19 @@ bindSlider('show_speed', '%');
 
 /* ── Display tab — live auto-persist ──────────────────────────────────────── */
 function postDisplaySettings() {
+  var brightnessEl = document.getElementById('brightness');
+  var brightnessDimEl = document.getElementById('brightness_dim');
+  var lensPresetEl = document.getElementById('lens_preset');
+  var startupAnimEl = document.getElementById('startup_anim');
+  if (!brightnessEl || !brightnessDimEl || !lensPresetEl || !startupAnimEl) return;
   fetch('/api/settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      brightness:     +document.getElementById('brightness').value,
-      brightness_dim: +document.getElementById('brightness_dim').value,
-      lens_preset:    +document.getElementById('lens_preset').value,
-      startup_anim:   document.getElementById('startup_anim').checked ? 1 : 0
+      brightness:     +brightnessEl.value,
+      brightness_dim: +brightnessDimEl.value,
+      lens_preset:    +lensPresetEl.value,
+      startup_anim:   startupAnimEl.checked ? 1 : 0
     })
   })
   .then(function(r) {
