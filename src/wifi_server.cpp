@@ -1258,6 +1258,42 @@ bindSlider('turn_blink_ms', ' ms');
 bindSlider('frame_ms', ' ms');
 bindSlider('show_speed', '%');
 
+/* ── Display tab — live auto-persist ──────────────────────────────────────── */
+function postDisplaySettings() {
+  var brightnessEl = document.getElementById('brightness');
+  var brightnessDimEl = document.getElementById('brightness_dim');
+  var lensPresetEl = document.getElementById('lens_preset');
+  var startupAnimEl = document.getElementById('startup_anim');
+  if (!brightnessEl || !brightnessDimEl || !lensPresetEl || !startupAnimEl) {
+    console.warn('Display auto-save skipped: missing one or more display controls');
+    return;
+  }
+  fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      brightness:     +brightnessEl.value,
+      brightness_dim: +brightnessDimEl.value,
+      lens_preset:    +lensPresetEl.value,
+      startup_anim:   startupAnimEl.checked ? 1 : 0
+    })
+  })
+  .then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    g_lastSyncMs = Date.now();
+    updateSyncAge();
+  })
+  .catch(function(e) {
+    console.warn('Display auto-save failed:', e && e.message ? e.message : e);
+  });
+}
+var brightnessEl = document.getElementById('brightness');
+if (brightnessEl) brightnessEl.addEventListener('change', postDisplaySettings);
+var brightnessDimEl = document.getElementById('brightness_dim');
+if (brightnessDimEl) brightnessDimEl.addEventListener('change', postDisplaySettings);
+var startupAnimEl = document.getElementById('startup_anim');
+if (startupAnimEl) startupAnimEl.addEventListener('change', postDisplaySettings);
+
 /* ── Color pickers ───────────────────────────────────────────────────────── */
 function bindColor(pid, hid) {
   var p = document.getElementById(pid);
@@ -1621,7 +1657,13 @@ var LENS_DESCS = [
 function updateLensDesc() {
   document.getElementById('lens-desc').textContent = LENS_DESCS[+document.getElementById('lens_preset').value] || '';
 }
-document.getElementById('lens_preset').addEventListener('change', updateLensDesc);
+var lensPresetEl = document.getElementById('lens_preset');
+if (lensPresetEl) {
+  lensPresetEl.addEventListener('change', function() {
+    updateLensDesc();
+    postDisplaySettings();
+  });
+}
 updateLensDesc();
 
 /* ── Color presets ───────────────────────────────────────────────────────── */
