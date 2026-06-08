@@ -58,6 +58,8 @@ extern volatile unsigned long g_rest_pulse_until_ms;
 extern volatile uint8_t       g_soft_driver_mask;
 extern volatile uint8_t       g_soft_passenger_mask;
 extern volatile uint8_t       g_soft_inputs_enabled;
+extern volatile uint8_t       g_live_driver_inputs;
+extern volatile uint8_t       g_live_passenger_inputs;
 
 // ── Pixel buffers (owned by main, shared with TailLight objects) ─────────────
 CRGB ledsDriver   [LEDS_PER_SIDE];   // driver side   (US left)
@@ -74,6 +76,7 @@ StatusLed      statusLed;
 // ── Timing ───────────────────────────────────────────────────────────────────
 static unsigned long lastFrameMs = 0;
 static constexpr uint8_t INPUT_SIGNAL_MASK = 0x0F; // bit0 brake, bit1 running, bit2 turn, bit3 reverse
+static constexpr unsigned long REST_PULSE_HALF_CYCLE_MS = 180UL;
 
 // ── Boot-fault state (set in logAndCountReset, reported after CAN is up) ───────
 static esp_reset_reason_t g_bootReason       = ESP_RST_UNKNOWN;
@@ -966,6 +969,8 @@ void loop() {
     // a coherent set of flags from a single debounce cycle.
     uint8_t ds = inputs.driverSnapshot();
     uint8_t ps = inputs.passengerSnapshot();
+    g_live_driver_inputs = ds;
+    g_live_passenger_inputs = ps;
     if (g_soft_inputs_enabled) {
         ds |= (g_soft_driver_mask & INPUT_SIGNAL_MASK);
         ps |= (g_soft_passenger_mask & INPUT_SIGNAL_MASK);
@@ -1047,7 +1052,7 @@ void loop() {
 
     // Optional rest-mode test pulse from the web UI (brief RUNNING/OFF pulse).
     if (nowMs < g_rest_pulse_until_ms) {
-        const LightState pulseState = ((nowMs / 180UL) & 1UL)
+        const LightState pulseState = ((nowMs / REST_PULSE_HALF_CYCLE_MS) & 1UL)
                                       ? LightState::RUNNING
                                       : LightState::OFF;
         if (!(ds & 0x01) && !(ds & 0x08)) driverState    = pulseState;
