@@ -40,6 +40,9 @@ struct Settings {
     // ── Startup behavior ──────────────────────────────────────────────────
     uint8_t  startup_anim;  // 1 = play sequential sweep at boot, 0 = skip
 
+    // ── Rest mode ─────────────────────────────────────────────────────────
+    uint8_t  rest_mode;     // 0 = off, 1 = force RUNNING when all inputs idle
+
     // ── Show Mode ─────────────────────────────────────────────────────────────
     uint8_t  show_mode;    // 0 = off, 1 = on (overrides car-signal animations)
     uint8_t  show_anim;    // 0-19 which standalone show animation to play

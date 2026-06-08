@@ -54,6 +54,12 @@
 extern volatile LightState    g_preview_driver;
 extern volatile LightState    g_preview_passenger;
 extern volatile unsigned long g_preview_until_ms;
+extern volatile unsigned long g_rest_pulse_until_ms;
+extern volatile uint8_t       g_soft_driver_mask;
+extern volatile uint8_t       g_soft_passenger_mask;
+extern volatile uint8_t       g_soft_inputs_enabled;
+extern volatile uint8_t       g_live_driver_inputs;
+extern volatile uint8_t       g_live_passenger_inputs;
 
 // ── Pixel buffers (owned by main, shared with TailLight objects) ─────────────
 CRGB ledsDriver   [LEDS_PER_SIDE];   // driver side   (US left)
@@ -69,6 +75,8 @@ StatusLed      statusLed;
 
 // ── Timing ───────────────────────────────────────────────────────────────────
 static unsigned long lastFrameMs = 0;
+static constexpr uint8_t INPUT_SIGNAL_MASK = 0x0F; // bit0 brake, bit1 running, bit2 turn, bit3 reverse
+static constexpr unsigned long REST_PULSE_HALF_CYCLE_MS = 180UL;
 
 // ── Boot-fault state (set in logAndCountReset, reported after CAN is up) ───────
 static esp_reset_reason_t g_bootReason       = ESP_RST_UNKNOWN;
@@ -959,8 +967,14 @@ void loop() {
     // Input is polled by the input task on Core 0.  Read the atomic snapshots
     // (single-byte loads — guaranteed atomic on Xtensa LX7) so we always see
     // a coherent set of flags from a single debounce cycle.
-    const uint8_t ds = inputs.driverSnapshot();
-    const uint8_t ps = inputs.passengerSnapshot();
+    uint8_t ds = inputs.driverSnapshot();
+    uint8_t ps = inputs.passengerSnapshot();
+    g_live_driver_inputs = ds;
+    g_live_passenger_inputs = ps;
+    if (g_soft_inputs_enabled) {
+        ds |= (g_soft_driver_mask & INPUT_SIGNAL_MASK);
+        ps |= (g_soft_passenger_mask & INPUT_SIGNAL_MASK);
+    }
 
     LightState driverState = resolveSideState(
         ds & 0x01, ds & 0x02, ds & 0x04, ds & 0x08,
@@ -970,6 +984,13 @@ void loop() {
         ps & 0x01, ps & 0x02, ps & 0x04, ps & 0x08,
         ds & 0x04, ds & 0x01, ds & 0x02
     );
+
+    // ── Rest mode override ───────────────────────────────────────────────────
+    // Optional idle mode from web UI: if every input is off, show RUNNING.
+    if (g_settings.rest_mode && ds == 0 && ps == 0) {
+        driverState = LightState::RUNNING;
+        passengerState = LightState::RUNNING;
+    }
 
     // ── CAN bus tick (TX broadcast + RX command processing) ─────────────────
     canBus.tick(driverState, passengerState, inputs, thermal);
@@ -1011,21 +1032,31 @@ void loop() {
         if (!(ps & 0x01) && !(ps & 0x08)) passengerState = canBus.overridePassenger();
     }
 
-    // ── Web UI preview override ──────────────────────────────────────────────
-    // POST /api/preview sets a timed state override (3 s) so the user can
-    // verify animation colors from the mobile settings page.
-    // Safety: brake and reverse physical signals are never suppressed.
-    if (nowMs < g_preview_until_ms) {
-        if (!(ds & 0x01) && !(ds & 0x08)) driverState    = g_preview_driver;
-        if (!(ps & 0x01) && !(ps & 0x08)) passengerState = g_preview_passenger;
-    }
-
     // ── Show mode override ───────────────────────────────────────────────────
     // Activates the standalone show animation when enabled from the web UI.
     // Safety: brake and reverse always win — show mode cannot suppress them.
     if (g_settings.show_mode) {
         if (!(ds & 0x01) && !(ds & 0x08)) driverState    = LightState::SHOW;
         if (!(ps & 0x01) && !(ps & 0x08)) passengerState = LightState::SHOW;
+    }
+
+    // ── Web UI preview override ──────────────────────────────────────────────
+    // POST /api/preview sets a timed state override so the user can verify
+    // colors and animations from the web UI.  Applied after show mode so the
+    // preview controls always respond.
+    // Safety: brake and reverse physical signals are never suppressed.
+    if (nowMs < g_preview_until_ms) {
+        if (!(ds & 0x01) && !(ds & 0x08)) driverState    = g_preview_driver;
+        if (!(ps & 0x01) && !(ps & 0x08)) passengerState = g_preview_passenger;
+    }
+
+    // Optional rest-mode test pulse from the web UI (brief RUNNING/OFF pulse).
+    if (nowMs < g_rest_pulse_until_ms) {
+        const LightState pulseState = ((nowMs / REST_PULSE_HALF_CYCLE_MS) & 1UL)
+                                      ? LightState::RUNNING
+                                      : LightState::OFF;
+        if (!(ds & 0x01) && !(ds & 0x08)) driverState    = pulseState;
+        if (!(ps & 0x01) && !(ps & 0x08)) passengerState = pulseState;
     }
 
     // ── Status LED ──────────────────────────────────────────────────────────
