@@ -605,9 +605,9 @@ private:
     static AnimRunBreathe _runBreathe;
     static AnimBrake      _brake;
     static AnimBrakePulse     _brakePulse;
-    static AnimBrakeCenterOut _brakeCenterOut;
+    static AnimBrakeCenterOut _brakeCenterOutD, _brakeCenterOutP;
     static AnimBrakeStrobe    _brakeStrobe;
-    static AnimBrakeOuterIn   _brakeOuterIn;
+    static AnimBrakeOuterIn   _brakeOuterInD, _brakeOuterInP;
     static AnimBrakeHeartbeat _brakeHeartbeat;
     static AnimTurnSignal _turnDriver;     // driver-side   sequential sweep
     static AnimTurnSignal _turnPassenger;  // passenger-side sequential sweep
@@ -620,7 +620,7 @@ private:
     static AnimReversePulse   _reversePulse;
     static AnimReverseSparkle _reverseSparkle;
     static AnimReverseScanner _reverseScanner;
-    static AnimHazard     _hazard;
+    static AnimHazard     _hazardD, _hazardP;
     static AnimScrollText _scrollText;
     static AnimFlash      _flash;
     static AnimRunShimmer _runShimmer;

@@ -14,9 +14,11 @@ AnimRunning    AnimationRegistry::_running;
 AnimRunBreathe AnimationRegistry::_runBreathe;
 AnimBrake      AnimationRegistry::_brake;
 AnimBrakePulse     AnimationRegistry::_brakePulse;
-AnimBrakeCenterOut AnimationRegistry::_brakeCenterOut;
+AnimBrakeCenterOut AnimationRegistry::_brakeCenterOutD;
+AnimBrakeCenterOut AnimationRegistry::_brakeCenterOutP;
 AnimBrakeStrobe    AnimationRegistry::_brakeStrobe;
-AnimBrakeOuterIn   AnimationRegistry::_brakeOuterIn;
+AnimBrakeOuterIn   AnimationRegistry::_brakeOuterInD;
+AnimBrakeOuterIn   AnimationRegistry::_brakeOuterInP;
 AnimBrakeHeartbeat AnimationRegistry::_brakeHeartbeat;
 AnimTurnSignal AnimationRegistry::_turnDriver;
 AnimTurnSignal AnimationRegistry::_turnPassenger;
@@ -36,7 +38,8 @@ AnimReverseSparkle AnimationRegistry::_reverseSparkle;
 AnimReverseScanner AnimationRegistry::_reverseScanner;
 AnimRunShimmer     AnimationRegistry::_runShimmer;
 AnimRunComet       AnimationRegistry::_runComet;
-AnimHazard     AnimationRegistry::_hazard;
+AnimHazard     AnimationRegistry::_hazardD;
+AnimHazard     AnimationRegistry::_hazardP;
 AnimScrollText AnimationRegistry::_scrollText;
 AnimFlash      AnimationRegistry::_flash;
 AnimShowRainbow    AnimationRegistry::_showRainbow;
@@ -97,9 +100,9 @@ Animation* AnimationRegistry::get(LightState state, bool isDriver) {
         case LightState::BRAKE:
             switch (g_settings.brake_anim) {
                 case 1: return &_brakePulse;
-                case 2: return &_brakeCenterOut;
+                case 2: return isDriver ? static_cast<Animation*>(&_brakeCenterOutD) : static_cast<Animation*>(&_brakeCenterOutP);
                 case 3: return &_brakeStrobe;
-                case 4: return &_brakeOuterIn;
+                case 4: return isDriver ? static_cast<Animation*>(&_brakeOuterInD) : static_cast<Animation*>(&_brakeOuterInP);
                 case 5: return &_brakeHeartbeat;
                 default: return &_brake;
             }
@@ -123,7 +126,7 @@ Animation* AnimationRegistry::get(LightState state, bool isDriver) {
                 default: return &_reverse;
             }
 
-        case LightState::HAZARD:    return &_hazard;
+        case LightState::HAZARD:    return isDriver ? static_cast<Animation*>(&_hazardD) : static_cast<Animation*>(&_hazardP);
 
         case LightState::SHOW:
             switch (g_settings.show_anim) {
@@ -1898,4 +1901,3 @@ void AnimShowGlitch::update(TailLight& side, LightState /*state*/, unsigned long
     side.fillSegment(SEG_BOT_STRIP, CRGB(rb, 0, 0));
     side.fillSegment(SEG_MAIN,      CRGB(rb, 0, 0));
 }
-

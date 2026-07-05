@@ -66,6 +66,8 @@ StatusLed      statusLed;
 
 // ── Timing ───────────────────────────────────────────────────────────────────
 static unsigned long lastFrameMs = 0;
+static TurnBlinkDetector driverTurnBlink;
+static TurnBlinkDetector passengerTurnBlink;
 
 // ── Boot-fault state (set in logAndCountReset, reported after CAN is up) ───────
 static esp_reset_reason_t g_bootReason       = ESP_RST_UNKNOWN;
@@ -74,6 +76,21 @@ static uint32_t           g_bootFaultCount   = 0;
 // Stuck input flags saved by st_checkInputPins() before CAN is initialised
 static uint8_t g_stuckDriver  = 0;  // bit0=brake bit1=running bit2=turn bit3=reverse
 static uint8_t g_stuckPassenger = 0;
+
+static const char* lightStateName(LightState state) {
+    switch (state) {
+        case LightState::OFF:        return "OFF";
+        case LightState::RUNNING:    return "RUNNING";
+        case LightState::BRAKE:      return "BRAKE";
+        case LightState::TURN:       return "TURN";
+        case LightState::REVERSE:    return "REVERSE";
+        case LightState::BRAKE_TURN: return "BRAKE_TURN";
+        case LightState::HAZARD:     return "HAZARD";
+        case LightState::CUSTOM:     return "CUSTOM";
+        case LightState::SHOW:       return "SHOW";
+        default:                     return "?";
+    }
+}
 
 // ===========================================================================
 // NVS fault counter + boot reason logging
@@ -932,15 +949,84 @@ void loop() {
     // a coherent set of flags from a single debounce cycle.
     const uint8_t ds = inputs.driverSnapshot();
     const uint8_t ps = inputs.passengerSnapshot();
+    const uint8_t drs = inputs.driverRawSnapshot();
+    const uint8_t prs = inputs.passengerRawSnapshot();
+
+    const bool driverBrake = ds & 0x01;
+    const bool driverRunning = ds & 0x02;
+    const bool driverTurn = ds & 0x04;
+    const bool driverReverse = ds & 0x08;
+    const bool passengerBrake = ps & 0x01;
+    const bool passengerRunning = ps & 0x02;
+    const bool passengerTurn = ps & 0x04;
+    const bool passengerReverse = ps & 0x08;
+
+    // Blink detection is transition-based. A steady ON turn input may be an
+    // electrical fault or a held line, but it is not enough to select TURN or
+    // HAZARD until timing-valid edges are observed.
+    const TurnBlinkSnapshot driverBlink = driverTurnBlink.update(driverTurn, nowMs);
+    const TurnBlinkSnapshot passengerBlink = passengerTurnBlink.update(passengerTurn, nowMs);
+    const bool hazardBlinking = validHazardBlink(driverBlink, passengerBlink);
 
     LightState driverState = resolveSideState(
-        ds & 0x01, ds & 0x02, ds & 0x04, ds & 0x08,
-        ps & 0x04
+        driverBrake, driverRunning, driverBlink.blinking, driverReverse,
+        hazardBlinking
     );
     LightState passengerState = resolveSideState(
-        ps & 0x01, ps & 0x02, ps & 0x04, ps & 0x08,
-        ds & 0x04
+        passengerBrake, passengerRunning, passengerBlink.blinking, passengerReverse,
+        hazardBlinking
     );
+
+    if (SERIAL_INPUT_DEBUG) {
+        static uint8_t lastDs = 0xFF;
+        static uint8_t lastPs = 0xFF;
+        static uint8_t lastDrs = 0xFF;
+        static uint8_t lastPrs = 0xFF;
+        static bool lastDriverBlink = false;
+        static bool lastPassengerBlink = false;
+        static bool lastHazardBlinking = false;
+        static LightState lastDriverState = LightState::CUSTOM;
+        static LightState lastPassengerState = LightState::CUSTOM;
+        static uint8_t lastSafeBrightness = 0xFF;
+        static unsigned long lastLogMs = 0;
+
+        const bool changed = ds != lastDs || ps != lastPs || drs != lastDrs || prs != lastPrs
+                          || driverBlink.blinking != lastDriverBlink
+                          || passengerBlink.blinking != lastPassengerBlink
+                          || hazardBlinking != lastHazardBlinking
+                          || driverState != lastDriverState
+                          || passengerState != lastPassengerState
+                          || safeBrightness != lastSafeBrightness;
+        if (changed || (nowMs - lastLogMs) >= 1000UL) {
+            const uint16_t driverFinalBrightness =
+                ((uint16_t)safeBrightness * BRIGHTNESS_SCALE_DRIVER) / 255;
+            const uint16_t passengerFinalBrightness =
+                ((uint16_t)safeBrightness * BRIGHTNESS_SCALE_PASSENGER) / 255;
+            Serial.printf("[inputs] raw D=%02X P=%02X debounced D=%02X P=%02X "
+                          "blink D=%u P=%u hazard=%u state D=%s P=%s "
+                          "brightness D=%u P=%u global=%u\n",
+                          drs, prs, ds, ps,
+                          driverBlink.blinking ? 1 : 0,
+                          passengerBlink.blinking ? 1 : 0,
+                          hazardBlinking ? 1 : 0,
+                          lightStateName(driverState),
+                          lightStateName(passengerState),
+                          driverFinalBrightness,
+                          passengerFinalBrightness,
+                          safeBrightness);
+            lastDs = ds;
+            lastPs = ps;
+            lastDrs = drs;
+            lastPrs = prs;
+            lastDriverBlink = driverBlink.blinking;
+            lastPassengerBlink = passengerBlink.blinking;
+            lastHazardBlinking = hazardBlinking;
+            lastDriverState = driverState;
+            lastPassengerState = passengerState;
+            lastSafeBrightness = safeBrightness;
+            lastLogMs = nowMs;
+        }
+    }
 
     // ── CAN bus tick (TX broadcast + RX command processing) ─────────────────
     canBus.tick(driverState, passengerState, inputs, thermal);
