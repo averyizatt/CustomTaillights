@@ -229,7 +229,7 @@ static void st_printConfig() {
 }
 
 // ---------------------------------------------------------------------------
-// Verify all four input lines are idle (HIGH) at power-on.
+// Verify all four input lines are idle at power-on.
 // An active line at boot likely means a wiring short or a signal already
 // present — flag it but do not halt.
 // Returns true if all inputs are idle.

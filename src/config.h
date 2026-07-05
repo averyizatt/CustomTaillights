@@ -107,8 +107,8 @@ static constexpr uint32_t LED_POWER_BUDGET_MA = 12000;    // mA  (12.0 A soft ca
 
 // ── Optocoupler inputs ───────────────────────────────────────────────────────
 // Two 4-channel optocouplers, one per side.
-// Each coupler output pulls its GPIO LOW when the stock bulb supply is ON.
-// All GPIOs are configured INPUT_PULLUP so lines are HIGH (inactive) at rest.
+// Each coupler output drives its GPIO HIGH when the stock bulb supply is ON.
+// All GPIOs are configured INPUT_PULLDOWN so lines are LOW (inactive) at rest.
 //
 // Signal → opto channel mapping (same on both sides):
 //   O1 → Brake
@@ -138,12 +138,12 @@ static constexpr int PIN_PASSENGER_TURN    =  3;
 static constexpr int PIN_PASSENGER_REVERSE = 10;
 
 // Logic level when the stock signal is ACTIVE.
-// The optocoupler output sinks current to pull the GPIO LOW when the stock
-// bulb circuit is energised. INPUT_PULLUP keeps lines HIGH at rest (inactive).
-#ifndef LOW
-static constexpr int LOW = 0;
+// The optocoupler output drives the GPIO HIGH when the stock bulb circuit is
+// energised. INPUT_PULLDOWN keeps lines LOW at rest (inactive).
+#ifndef HIGH
+static constexpr int HIGH = 1;
 #endif
-static constexpr int OPT_ACTIVE_LEVEL = LOW;
+static constexpr int OPT_ACTIVE_LEVEL = HIGH;
 
 // Debounce time in milliseconds
 static constexpr unsigned long DEBOUNCE_MS      = 20;  // turn

@@ -18,7 +18,7 @@ void Inputs::begin() {
     _channels[7].pin = PIN_PASSENGER_REVERSE; _channels[7].debounceMs = DEBOUNCE_FAST_MS; _channels[7].state = false; _channels[7].lastRaw = false; _channels[7].lastChangeMs = 0;
 
     for (auto& ch : _channels) {
-        pinMode(ch.pin, INPUT_PULLUP);
+        pinMode(ch.pin, INPUT_PULLDOWN);
     }
 }
 
