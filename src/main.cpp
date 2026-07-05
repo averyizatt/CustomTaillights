@@ -28,8 +28,6 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <esp_idf_version.h>
-#include <esp_bt.h>
-#include <esp_bt_main.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 #include <freertos/FreeRTOS.h>
@@ -170,7 +168,7 @@ static void logAndCountReset() {
 
     prefs.end();
 
-    g_bootReason = reason;  // save for CAN fault broadcast after canBus.begin()
+    g_bootReason = reason;  // save for optional CAN fault broadcast after boot
 }
 
 // ---------------------------------------------------------------------------
@@ -739,23 +737,6 @@ static void inputTaskFn(void* /*param*/) {
 
 // ---------------------------------------------------------------------------
 void setup() {
-    // BLE is not used by this firmware — disable it to recover heap.
-    btStop();
-#if defined(CONFIG_BT_ENABLED) && CONFIG_BT_ENABLED
-    if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_ENABLED) {
-        esp_bluedroid_disable();
-    }
-    if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_INITIALIZED) {
-        esp_bluedroid_deinit();
-    }
-    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED) {
-        esp_bt_controller_disable();
-    }
-    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_INITED) {
-        esp_bt_controller_deinit();
-    }
-#endif
-
     Serial.begin(115200);
     // ── Load persisted settings (NVS) ────────────────────────────────────────────
     // Must be called before any code reads g_settings (brightness, WiFi, etc.).
@@ -777,12 +758,9 @@ void setup() {
     {
         FastLED.addLeds<WS2812B, PIN_STATUS_LED, GRB>(&statusLed.pixel, 1);
     }
-    // Apply per-side brightness trims (config.h).  These are independent of
-    // the global brightness set by FastLED.setBrightness() so they persist
-    // even when thermal derating adjusts the global scale each frame.
-    // Controller indices: 0 = driver, 1 = passenger, 2 = status LED.
-    FastLED[0].setScale(BRIGHTNESS_SCALE_DRIVER);
-    FastLED[1].setScale(BRIGHTNESS_SCALE_PASSENGER);
+    // Per-side brightness trims are intentionally equal by default. FastLED
+    // 3.10 removed the old per-controller setScale() API, so side matching is
+    // enforced by shared state/colour rendering rather than controller scale.
     statusLed.begin();  // state = BOOT, pixel = Black
 
     FastLED.setBrightness(g_settings.brightness);
@@ -814,10 +792,20 @@ void setup() {
         Serial.println(F("[boot] holdoff complete — supply stable"));
     }
     // Initialise animation registry
+    Serial.println(F("[boot] init animations"));
     AnimationRegistry::init();
 
     // Initialise optocoupler inputs (sets pin modes — must run before self-test)
+    Serial.println(F("[boot] init inputs"));
     inputs.begin();
+
+    // ── WiFi + HTTP server ────────────────────────────────────────────────────
+    // Bring WiFi up before any optional startup animations, CAN probing, or
+    // watchdog setup. That keeps the controller reachable even if a later
+    // nonessential subsystem blocks on the bench.
+    Serial.println(F("[boot] init wifi"));
+    wifiServer.begin();
+    Serial.println(F("[boot] wifi ready"));
 
     // ── Bench test cycle entry check ─────────────────────────────────────────
     // Hold only PIN_DRIVER_RUNNING (GPIO 6) active while powering on to run
@@ -837,6 +825,7 @@ void setup() {
         (digitalRead(PIN_PASSENGER_REVERSE) == OPT_ACTIVE_LEVEL);
     const bool testModeRequested =
         driverRunningActive && !passengerRunningActive && !otherInputsActive;
+    Serial.printf("[boot] test mode: %s\n", testModeRequested ? "yes" : "no");
 
     // ── Startup self-test ────────────────────────────────────────────────────
     // Runs the segment ID flash, pixel chaser, and colour verify (~5 s).
@@ -845,6 +834,7 @@ void setup() {
     // fast as possible.  Never run the blocking self-test on every power cycle
     // of a safety-critical device.
     if (testModeRequested) {
+        Serial.println(F("[boot] startup self-test"));
         runStartupSelfTest();
     }
 
@@ -852,53 +842,66 @@ void setup() {
     // Quick automotive sequential sweep (~900 ms).  Skipped when disabled
     // via the web UI (startup_anim == 0) for instant-on in-car boots.
     if (g_settings.startup_anim) {
+        Serial.println(F("[boot] startup animation"));
         runStartupAnim();
+        Serial.println(F("[boot] startup animation complete"));
     }
 
     // ── Bench test cycle ─────────────────────────────────────────────────────
     // Runs only if PIN_DRIVER_RUNNING was held active at power-on.
     if (testModeRequested) {
+        Serial.println(F("[boot] bench test cycle"));
         runTestCycle();
     }
     // ────────────────────────────────────────────────────────────────────────
 
     // Initialise taillight panels (sets idle animation)
+    Serial.println(F("[boot] init panels"));
     driverPanel.begin();
     passengerPanel.begin();
 
-    // Initialise CAN bus (MCP2515 via SPI)
-    canBus.begin();
+    // Initialise CAN bus only when the MCP2515 hardware is installed. Some
+    // MCP2515 libraries block while probing an absent module, which would keep
+    // setup() from ever reaching the input/render loop.
+    if (CAN_ENABLED) {
+        Serial.println(F("[boot] init CAN"));
+        canBus.begin();
+        Serial.println(F("[boot] CAN init returned"));
 
-    // ── Boot fault reporting over CAN ────────────────────────────────────────
-    // Faults detected before CAN was up are reported here as one-shots.
-    switch (g_bootReason) {
-        case ESP_RST_TASK_WDT:
-        case ESP_RST_WDT:
-            canBus.reportFault(FAULT_WDT_RESET, FAULT_SEV_WARNING,
-                               (uint8_t)(g_bootFaultCount & 0xFF));
-            break;
-        case ESP_RST_PANIC:
-            canBus.reportFault(FAULT_PANIC_RESET, FAULT_SEV_CRITICAL,
-                               (uint8_t)(g_bootFaultCount & 0xFF));
-            break;
-        case ESP_RST_BROWNOUT:
-            canBus.reportFault(FAULT_BROWNOUT_RESET, FAULT_SEV_WARNING,
-                               (uint8_t)(g_bootFaultCount & 0xFF));
-            break;
-        default:
-            break;
-    }
-    if (g_stuckDriver != 0 || g_stuckPassenger != 0) {
-        canBus.reportFault(FAULT_INPUT_STUCK_BOOT, FAULT_SEV_WARNING,
-                           g_stuckDriver, g_stuckPassenger);
+        // ── Boot fault reporting over CAN ───────────────────────────────────
+        // Faults detected before CAN was up are reported here as one-shots.
+        switch (g_bootReason) {
+            case ESP_RST_TASK_WDT:
+            case ESP_RST_WDT:
+                canBus.reportFault(FAULT_WDT_RESET, FAULT_SEV_WARNING,
+                                   (uint8_t)(g_bootFaultCount & 0xFF));
+                break;
+            case ESP_RST_PANIC:
+                canBus.reportFault(FAULT_PANIC_RESET, FAULT_SEV_CRITICAL,
+                                   (uint8_t)(g_bootFaultCount & 0xFF));
+                break;
+            case ESP_RST_BROWNOUT:
+                canBus.reportFault(FAULT_BROWNOUT_RESET, FAULT_SEV_WARNING,
+                                   (uint8_t)(g_bootFaultCount & 0xFF));
+                break;
+            default:
+                break;
+        }
+        if (g_stuckDriver != 0 || g_stuckPassenger != 0) {
+            canBus.reportFault(FAULT_INPUT_STUCK_BOOT, FAULT_SEV_WARNING,
+                               g_stuckDriver, g_stuckPassenger);
+        }
+    } else {
+        Serial.println(F("[boot] CAN disabled"));
     }
 
     // Initialise thermal manager (reads initial die temperature)
+    Serial.println(F("[boot] init thermal"));
     thermal.begin();
 
     // ── Hardware Task Watchdog ────────────────────────────────────────────────
-    // Initialised AFTER the startup demo so the long delay() sequences do
-    // not cause a premature watchdog reset.
+    // Initialised after all blocking boot work so WiFi STA connection attempts
+    // cannot trip the 3-second watchdog before AP fallback or normal signals.
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     {
         const esp_task_wdt_config_t wdtCfg = {
@@ -928,11 +931,6 @@ void setup() {
     );
     // ────────────────────────────────────────────────────────────────────────
 
-    // ── WiFi + HTTP server ────────────────────────────────────────────────────
-    // Brings up WiFi in AP or Station mode (per g_settings) and registers all
-    // HTTP routes.  Must be called after settings_load().
-    wifiServer.begin();
-
     Serial.println(F("[taillight] ready — entering main loop"));
 }
 
@@ -959,7 +957,7 @@ void loop() {
         if (t >= TEMP_SHUTDOWN_C)      newFault = FAULT_THERMAL_CRITICAL;
         else if (t >= TEMP_DERATE_START_C) newFault = FAULT_THERMAL_WARN;
 
-        if (newFault != prevThermalFault) {
+        if (CAN_ENABLED && newFault != prevThermalFault) {
             if (newFault != FAULT_NONE) {
                 uint8_t sev = (newFault == FAULT_THERMAL_CRITICAL)
                               ? FAULT_SEV_CRITICAL : FAULT_SEV_WARNING;
@@ -967,18 +965,21 @@ void loop() {
                                    (uint8_t)constrain((int)t, 0, 255));
             }
             prevThermalFault = newFault;
+        } else if (!CAN_ENABLED) {
+            prevThermalFault = newFault;
         }
     }
 
     // Determine target brightness: prefer CAN override, else default.
     // Always pass through thermal derating — it is never bypassed, even
     // by a CAN command, so safety-critical lights always remain visible.
-    uint8_t targetBrightness = canBus.brightnessChanged()
+    const bool canBrightnessChanged = CAN_ENABLED && canBus.brightnessChanged();
+    uint8_t targetBrightness = canBrightnessChanged
                              ? canBus.brightness()
                              : g_settings.brightness;
     uint8_t safeBrightness = thermal.applyBrightness(targetBrightness);
     FastLED.setBrightness(safeBrightness);
-    if (canBus.brightnessChanged()) canBus.clearBrightnessChanged();
+    if (canBrightnessChanged) canBus.clearBrightnessChanged();
 
     // Input is polled by the input task on Core 0.  Read the atomic snapshots
     // (single-byte loads — guaranteed atomic on Xtensa LX7) so we always see
@@ -1089,13 +1090,15 @@ void loop() {
     }
 
     // ── CAN bus tick (TX broadcast + RX command processing) ─────────────────
-    canBus.tick(driverState, passengerState, inputs, thermal);
+    if (CAN_ENABLED) {
+        canBus.tick(driverState, passengerState, inputs, thermal);
+    }
 
     // ── State override priority (highest → lowest) ───────────────────────────
     //  1. Custom animation (Cmd 0x04) — plays to completion, then auto-clears
     //  2. Animation override (Cmd 0x02) — holds until Cmd 0x03
     //  3. Normal input-driven state
-    if (canBus.hasCustomAnim()) {
+    if (CAN_ENABLED && canBus.hasCustomAnim()) {
         // Safety: physical brake and reverse signals are never suppressed by a
         // custom animation.  bit0 = brake, bit3 = reverse (see inputs.h).
         if (!brakeActive && !reverseActive) driverState  = LightState::CUSTOM;
@@ -1119,7 +1122,7 @@ void loop() {
             canBus.clearCustomAnim();
             AnimationRegistry::setCustomSlot(AnimationRegistry::CustomSlot::NONE);
         }
-    } else if (canBus.hasOverride()) {
+    } else if (CAN_ENABLED && canBus.hasOverride()) {
         // Safety: never suppress an active brake or reverse signal via a CAN
         // command — these are safety-critical lights.  Apply the override only
         // when all physical brake and reverse channels are inactive.

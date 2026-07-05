@@ -182,6 +182,11 @@ static constexpr int   TEMP_DERATE_END_C       =   80;  // max derating applied 
 static constexpr int   TEMP_SHUTDOWN_C         =   85;  // above this: BRIGHTNESS_MIN_SAFETY
 
 // ── MCP2515 CAN bus (SPI) ────────────────────────────────────────────────────
+// Disabled by default so the taillight controller still boots and renders
+// signals on the bench if the MCP2515 module is missing, unpowered, or wired
+// differently. Set true only after CAN hardware is installed and verified.
+static constexpr bool CAN_ENABLED = false;
+
 // The common blue MCP2515 breakout connects to a custom SPI bus so it does
 // not conflict with any other peripheral.
 //
@@ -214,6 +219,9 @@ static constexpr uint32_t CAN_ID_FAULT           = 0x102;
 
 // How often (ms) the taillight state is broadcast on the bus
 static constexpr unsigned long CAN_BROADCAST_INTERVAL_MS = 100;
+
+// Rest-mode UI test pulse timing.
+static constexpr unsigned long REST_PULSE_HALF_CYCLE_MS = 300;
 
 // ── Animation timing ─────────────────────────────────────────────────────────
 // How often the main loop calls the active animation's update() method.
