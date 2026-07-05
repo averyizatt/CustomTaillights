@@ -81,7 +81,9 @@ static constexpr int  PIN_LED_PASSENGER = 19;  // GPIO19 → passenger-side tail
 
 // Global brightness (0-255).  Keep well below 255 to limit current draw.
 static constexpr uint8_t BRIGHTNESS_DEFAULT    = 128;
-static constexpr uint8_t BRIGHTNESS_DIM        =  40;  // running-light level
+static constexpr uint8_t BRIGHTNESS_DIM        =  25;  // running-light level
+static constexpr uint8_t RUNNING_BRIGHTNESS_MAX_PERCENT = 35;
+static constexpr uint8_t BRAKE_ANIM_MIN_SCALE  = 180;  // keep brake effects visibly above running
 
 // Per-side brightness trim (0-255, 255 = full, no reduction).
 // If one side appears brighter than the other due to LED binning or wiring

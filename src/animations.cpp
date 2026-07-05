@@ -81,6 +81,16 @@ AnimShowAurora         AnimationRegistry::_showAurora;
 AnimShowGlitch         AnimationRegistry::_showGlitch;
 AnimationRegistry::CustomSlot AnimationRegistry::_customSlot = AnimationRegistry::CustomSlot::NONE;
 
+static inline uint8_t runningDimPercent() {
+    return (uint8_t)constrain(g_settings.brightness_dim, 5, RUNNING_BRIGHTNESS_MAX_PERCENT);
+}
+
+static inline CRGB brakeColour(uint8_t scale = 255) {
+    return CRGB(scale8(g_settings.brake_r, scale),
+                scale8(g_settings.brake_g, scale),
+                scale8(g_settings.brake_b, scale));
+}
+
 // ---------------------------------------------------------------------------
 void AnimationRegistry::init() {
     // Nothing to allocate dynamically for the built-ins.
@@ -184,8 +194,9 @@ void AnimOff::update(TailLight& side, LightState /*state*/, unsigned long /*nowM
 
 // ── AnimRunning ──────────────────────────────────────────────────────────────
 void AnimRunning::update(TailLight& side, LightState /*state*/, unsigned long /*nowMs*/) {
-    // Scale the user-chosen running color by brightness_dim (5–100 → 5–100%)
-    uint8_t dim = g_settings.brightness_dim;
+    // Running/park lights are intentionally capped below brake intensity so
+    // pressing the brake while parked always creates a visible step up.
+    uint8_t dim = runningDimPercent();
     uint8_t r = (uint8_t)((g_settings.run_r * dim) / 100);
     uint8_t g = (uint8_t)((g_settings.run_g * dim) / 100);
     uint8_t b = (uint8_t)((g_settings.run_b * dim) / 100);
@@ -363,9 +374,8 @@ void AnimBrakePulse::update(TailLight& side, LightState /*state*/, unsigned long
     // speed factor: 100 % = 1200 ms period
     unsigned long period = (unsigned long)(1200UL * 100 / constrain(g_settings.show_speed, 50, 200));
     uint8_t s = sin8((uint8_t)((nowMs * 256UL) / period));
-    side.fill(CRGB(scale8(g_settings.brake_r, s),
-                   scale8(g_settings.brake_g, s),
-                   scale8(g_settings.brake_b, s)));
+    s = max(s, BRAKE_ANIM_MIN_SCALE);
+    side.fill(brakeColour(s));
 }
 
 // ── AnimBrakeCenterOut ────────────────────────────────────────────────────────
@@ -382,7 +392,7 @@ void AnimBrakeCenterOut::update(TailLight& side, LightState /*state*/, unsigned 
     unsigned long elapsed = nowMs - _startMs;
     if (elapsed >= 400) { _done = true; side.fill(col); return; }
 
-    side.fill(CRGB::Black);
+    side.fill(brakeColour(BRAKE_ANIM_MIN_SCALE));
     for (int seg = 0; seg < NUM_SEGMENTS; seg++) {
         int segCols = (seg == SEG_MAIN) ? MAIN_COLS : STRIP_COLS;
         int segRows = (seg == SEG_MAIN) ? MAIN_ROWS : STRIP_ROWS;
@@ -402,8 +412,7 @@ void AnimBrakeCenterOut::update(TailLight& side, LightState /*state*/, unsigned 
 // Rapid 8 Hz strobe (125 ms period, 50 % duty cycle).
 void AnimBrakeStrobe::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
     bool on = (nowMs % 125UL) < 62UL;
-    side.fill(on ? CRGB(g_settings.brake_r, g_settings.brake_g, g_settings.brake_b)
-                 : CRGB::Black);
+    side.fill(on ? brakeColour() : brakeColour(BRAKE_ANIM_MIN_SCALE));
 }
 
 // ===========================================================================
@@ -521,7 +530,7 @@ void AnimReversePulse::update(TailLight& side, LightState /*state*/, unsigned lo
 // ── AnimRunBreathe ────────────────────────────────────────────────────────────
 // Slow breathing pulse with the running colour, ~3 s period.
 void AnimRunBreathe::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
-    uint8_t dim = g_settings.brightness_dim;
+    uint8_t dim = runningDimPercent();
     uint8_t s   = sin8((uint8_t)((nowMs * 256UL) / 3000UL));
     // Scale s to the range 20–255 so it never fully goes dark
     s = 20 + scale8(s, 235);
@@ -550,7 +559,7 @@ void AnimBrakeOuterIn::update(TailLight& side, LightState /*state*/, unsigned lo
     unsigned long elapsed = nowMs - _startMs;
     if (elapsed >= 400UL) { _done = true; side.fill(col); return; }
 
-    side.fill(CRGB::Black);
+    side.fill(brakeColour(BRAKE_ANIM_MIN_SCALE));
     for (int seg = 0; seg < NUM_SEGMENTS; seg++) {
         int segCols = (seg == SEG_MAIN) ? MAIN_COLS : STRIP_COLS;
         int segRows = (seg == SEG_MAIN) ? MAIN_ROWS : STRIP_ROWS;
@@ -585,6 +594,7 @@ void AnimBrakeHeartbeat::update(TailLight& side, LightState /*state*/, unsigned 
     } else {
         bri = 0u;
     }
+    bri = max(bri, BRAKE_ANIM_MIN_SCALE);
     side.fill(CRGB(scale8(col.r, bri), scale8(col.g, bri), scale8(col.b, bri)));
 }
 
@@ -724,7 +734,7 @@ void AnimReverseScanner::update(TailLight& side, LightState /*state*/, unsigned 
 // ── AnimRunShimmer ────────────────────────────────────────────────────────────
 // Subtle per-column brightness shimmer (70–100 % of brightness_dim).
 void AnimRunShimmer::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
-    uint8_t dim = g_settings.brightness_dim;
+    uint8_t dim = runningDimPercent();
     uint8_t t   = (uint8_t)(nowMs / 40UL);
     for (int seg = 0; seg < NUM_SEGMENTS; seg++) {
         int segCols = (seg == SEG_MAIN) ? MAIN_COLS : STRIP_COLS;
@@ -747,7 +757,7 @@ void AnimRunShimmer::update(TailLight& side, LightState /*state*/, unsigned long
 void AnimRunComet::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
     static constexpr int TAIL            = 8;
     static constexpr unsigned long PERIOD = 4000UL;
-    uint8_t dim     = g_settings.brightness_dim;
+    uint8_t dim     = runningDimPercent();
     int totalPos    = (STRIP_COLS - 1) * 2;
     int pos         = (int)((nowMs % PERIOD) * (unsigned long)totalPos / PERIOD);
     int head        = (pos < STRIP_COLS) ? pos : totalPos - pos;

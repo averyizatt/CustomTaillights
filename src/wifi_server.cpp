@@ -581,8 +581,8 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
         </div>
       </div>
       <div class="slider-row">
-        <input type="range" id="brightness_dim" min="5" max="100" step="1" value="40">
-        <span class="slider-val" id="brightness_dim-v">40%</span>
+        <input type="range" id="brightness_dim" min="5" max="35" step="1" value="25">
+        <span class="slider-val" id="brightness_dim-v">25%</span>
       </div>
     </div>
   </div>
@@ -2084,7 +2084,7 @@ static void handlePostSettings() {
     if (doc["brightness"].is<int>())
         g_settings.brightness     = (uint8_t)constrain(doc["brightness"].as<int>(), 10, 255);
     if (doc["brightness_dim"].is<int>())
-        g_settings.brightness_dim = (uint8_t)constrain(doc["brightness_dim"].as<int>(), 5, 100);
+        g_settings.brightness_dim = (uint8_t)constrain(doc["brightness_dim"].as<int>(), 5, RUNNING_BRIGHTNESS_MAX_PERCENT);
     if (doc["turn_blink_ms"].is<int>())
         g_settings.turn_blink_ms  = (uint16_t)constrain(doc["turn_blink_ms"].as<int>(), 200, 1500);
     if (doc["frame_ms"].is<int>())

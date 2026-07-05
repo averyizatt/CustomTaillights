@@ -118,7 +118,7 @@ void settings_load() {
     // Clamp after loading so animation math never sees zero periods or
     // out-of-range selectors.
     g_settings.brightness     = (uint8_t)constrain(g_settings.brightness, 10, 255);
-    g_settings.brightness_dim = (uint8_t)constrain(g_settings.brightness_dim, 5, 100);
+    g_settings.brightness_dim = (uint8_t)constrain(g_settings.brightness_dim, 5, RUNNING_BRIGHTNESS_MAX_PERCENT);
     g_settings.turn_blink_ms  = (uint16_t)constrain((int)g_settings.turn_blink_ms, 200, 1500);
     g_settings.frame_ms       = (uint8_t)constrain(g_settings.frame_ms, 10, 100);
 
