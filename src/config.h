@@ -99,7 +99,7 @@ static constexpr uint8_t BRIGHTNESS_MIN_SAFETY =  30;
 // WS2812B worst-case: 60 mA per LED at full white × 760 LEDs = 45.6 A.
 // Reserve ~500 mA for the ESP32-S3 and logic; assign the rest to LEDs.
 static constexpr uint8_t  LED_VOLTAGE         =   5;      // volts (5 V rail)
-static constexpr uint32_t LED_POWER_BUDGET_MA = 14500;    // mA  (14.5 A of the 15 A supply)
+static constexpr uint32_t LED_POWER_BUDGET_MA = 12000;    // mA  (12.0 A soft cap to reduce supply/transient stress)
 
 // FastLED colour order for these panels
 #define LED_COLOR_ORDER GRB
@@ -146,10 +146,11 @@ static constexpr int LOW = 0;
 static constexpr int OPT_ACTIVE_LEVEL = LOW;
 
 // Debounce time in milliseconds
-static constexpr unsigned long DEBOUNCE_MS      = 20;  // turn, running
+static constexpr unsigned long DEBOUNCE_MS      = 20;  // turn
 static constexpr unsigned long DEBOUNCE_FAST_MS =  5;  // brake, reverse — 5 ms is
                                                         // imperceptible but rejects
                                                         // automotive contact bounce
+static constexpr unsigned long DEBOUNCE_RUNNING_MS = 35; // extra filtering for noisy running-light feeds
 
 // Turn / hazard blink validation.  A steady ON turn input is not a blink; it
 // must keep producing transitions in the expected automotive flasher range.
@@ -217,6 +218,8 @@ static constexpr unsigned long CAN_BROADCAST_INTERVAL_MS = 100;
 // ── Animation timing ─────────────────────────────────────────────────────────
 // How often the main loop calls the active animation's update() method.
 static constexpr unsigned long FRAME_INTERVAL_MS = 16;   // ~60 fps
+// Hard cap for hardware LED pushes so show() never exceeds 50 FPS.
+static constexpr unsigned long LED_SHOW_MIN_INTERVAL_MS = 20;  // 1000/50
 
 // Turn-signal blink period (total on+off cycle), milliseconds
 static constexpr unsigned long TURN_BLINK_PERIOD_MS = 600;

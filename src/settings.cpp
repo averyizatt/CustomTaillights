@@ -34,6 +34,8 @@ static const Settings kDefaults = {
 
     /* startup_anim   */ 1,  // play startup animation by default
 
+    /* rest_mode      */ 0,   // rest mode off by default
+
     /* show_mode      */ 0,   // show mode off by default
     /* show_anim      */ 0,   // rainbow
     /* show_speed     */ 100, // normal speed
@@ -93,6 +95,7 @@ void settings_load() {
     g_settings.lens_preset  = prefs.getUChar("lens_preset",  kDefaults.lens_preset);
 
     g_settings.startup_anim = prefs.getUChar("startup_anim", kDefaults.startup_anim);
+    g_settings.rest_mode    = prefs.getUChar("rest_mode",    kDefaults.rest_mode);
 
     // show_mode is intentionally NOT loaded from NVS so it always resets to
     // off (0) on every power cycle.  The user must re-enable it each session.
@@ -125,6 +128,7 @@ void settings_load() {
     g_settings.run_anim       = (uint8_t)constrain(g_settings.run_anim, 0, 3);
     g_settings.lens_preset    = (uint8_t)constrain(g_settings.lens_preset, 0, 3);
     g_settings.startup_anim   = (uint8_t)constrain(g_settings.startup_anim, 0, 1);
+    g_settings.rest_mode      = (uint8_t)constrain(g_settings.rest_mode, 0, 1);
     g_settings.show_mode      = 0;
     g_settings.show_anim      = (uint8_t)constrain(g_settings.show_anim, 0, 32);
     g_settings.show_speed     = (uint8_t)constrain(g_settings.show_speed, 50, 200);
@@ -164,6 +168,7 @@ void settings_save() {
     prefs.putUChar("lens_preset",  g_settings.lens_preset);
 
     prefs.putUChar("startup_anim", g_settings.startup_anim);
+    prefs.putUChar("rest_mode",    g_settings.rest_mode);
 
     // show_mode is not persisted — it resets to off on every boot.
     prefs.putUChar("show_anim",  g_settings.show_anim);

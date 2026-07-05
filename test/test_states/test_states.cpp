@@ -25,6 +25,20 @@ static void test_steady_modes() {
     assert(rightBrake == LightState::BRAKE);
 }
 
+static void test_steady_vehicle_signals_are_shared() {
+    bool driverBrake = true;
+    bool passengerBrake = false;
+    bool brakeActive = driverBrake || passengerBrake;
+    assert(resolveSideState(brakeActive, false, false, false, false) == LightState::BRAKE);
+    assert(resolveSideState(brakeActive, false, false, false, false) == LightState::BRAKE);
+
+    bool driverRunning = false;
+    bool passengerRunning = true;
+    bool runningActive = driverRunning || passengerRunning;
+    assert(resolveSideState(false, runningActive, false, false, false) == LightState::RUNNING);
+    assert(resolveSideState(false, runningActive, false, false, false) == LightState::RUNNING);
+}
+
 static void test_left_turn_side_only() {
     LightState left = resolveSideState(false, true, true, false, false);
     LightState right = resolveSideState(false, true, false, false, false);
@@ -84,6 +98,7 @@ static void test_one_sided_blinks_are_not_hazards() {
 
 int main() {
     test_steady_modes();
+    test_steady_vehicle_signals_are_shared();
     test_left_turn_side_only();
     test_right_turn_side_only();
     test_hazard_requires_blinking_transitions();

@@ -4,25 +4,24 @@
 // states.h
 // Per-side light state enum, turn blink detector, and resolver.
 //
-// Steady inputs and blinking inputs are deliberately separate. Hazard and
-// turn modes are selected only after the debounced turn input has produced
-// timing-valid transitions; a steady ON turn line is not treated as a blink.
+// Brake/running/reverse are steady vehicle-level signals in main.cpp; turn
+// and hazard modes are selected only from timing-valid turn input transitions.
+// A steady ON turn line is not treated as a blink.
 // ---------------------------------------------------------------------------
 
 #include <stdint.h>
 #include "config.h"
 
-// States that apply to one individual side.
 enum class LightState : uint8_t {
-    OFF        = 0,  // nothing active
-    RUNNING    = 1,  // dim red, parking / running light
-    BRAKE      = 2,  // bright red, brake
-    TURN       = 3,  // amber blink, this side's turn signal
-    REVERSE    = 4,  // white, reverse
-    BRAKE_TURN = 5,  // brake + turn active on the same side
-    HAZARD     = 6,  // both turn inputs blinking together
-    CUSTOM     = 7,  // CAN-commanded custom animation
-    SHOW       = 8,  // standalone show-mode animation
+    OFF        = 0,
+    RUNNING    = 1,
+    BRAKE      = 2,
+    TURN       = 3,
+    REVERSE    = 4,
+    BRAKE_TURN = 5,
+    HAZARD     = 6,
+    CUSTOM     = 7,
+    SHOW       = 8,
 };
 
 struct TurnBlinkSnapshot {
@@ -90,19 +89,17 @@ inline bool validHazardBlink(const TurnBlinkSnapshot& driver,
     return edgesSynced || risesSynced;
 }
 
-// Derive the LightState for one side from debounced steady inputs plus the
-// blink detector output. Each render frame starts clean from inputs, then
-// applies this priority:
-//   HAZARD > BRAKE_TURN > TURN > BRAKE > REVERSE > RUNNING > OFF
+// Resolve one side from shared steady inputs plus this side's turn blinking.
+// Priority: HAZARD > BRAKE_TURN > TURN > BRAKE > REVERSE > RUNNING > OFF.
 inline LightState resolveSideState(bool brake, bool running,
                                    bool turnBlinking, bool reverse,
                                    bool hazardBlinking)
 {
-    if (hazardBlinking)         return LightState::HAZARD;
-    if (brake && turnBlinking)  return LightState::BRAKE_TURN;
-    if (turnBlinking)           return LightState::TURN;
-    if (brake)                  return LightState::BRAKE;
-    if (reverse)                return LightState::REVERSE;
-    if (running)                return LightState::RUNNING;
+    if (hazardBlinking)        return LightState::HAZARD;
+    if (brake && turnBlinking) return LightState::BRAKE_TURN;
+    if (turnBlinking)          return LightState::TURN;
+    if (brake)                 return LightState::BRAKE;
+    if (reverse)               return LightState::REVERSE;
+    if (running)               return LightState::RUNNING;
     return LightState::OFF;
 }
