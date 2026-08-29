@@ -9,6 +9,12 @@ static constexpr uint8_t CMD_SET_BRIGHTNESS = 0x01;
 static constexpr uint8_t CMD_ANIM_OVERRIDE  = 0x02;
 static constexpr uint8_t CMD_CLEAR_OVERRIDE = 0x03;
 static constexpr uint8_t CMD_CUSTOM_ANIM    = 0x04;
+static constexpr unsigned long CAN_RETRY_MS = 1000;
+static constexpr uint8_t CAN_TX_FAILURE_LIMIT = 8;
+
+static bool deadlineReached(unsigned long nowMs, unsigned long deadlineMs) {
+    return deadlineMs != 0 && static_cast<int32_t>(nowMs - deadlineMs) >= 0;
+}
 
 // ---------------------------------------------------------------------------
 bool CANBus::begin() {
@@ -28,21 +34,30 @@ bool CANBus::_initMCP() {
     if (_mcp.setBitrate(CAN_500KBPS, MCP_8MHZ) != MCP2515::ERROR_OK) {
         Serial.println(F("[CAN] setBitrate failed — check module / clock"));
         _online = false;
+        _busOffRetryMs = millis() + CAN_RETRY_MS;
         return false;
     }
 
     // Accept only CAN_ID_COMMAND frames; mask & filter on bits 10:0.
     _mcp.setFilterMask(MCP2515::MASK0, false, 0x7FF);
     _mcp.setFilter(MCP2515::RXF0,      false, CAN_ID_COMMAND);
+    _mcp.setFilter(MCP2515::RXF1,      false, CAN_ID_COMMAND);
+    _mcp.setFilterMask(MCP2515::MASK1, false, 0x7FF);
+    _mcp.setFilter(MCP2515::RXF2,      false, CAN_ID_COMMAND);
+    _mcp.setFilter(MCP2515::RXF3,      false, CAN_ID_COMMAND);
+    _mcp.setFilter(MCP2515::RXF4,      false, CAN_ID_COMMAND);
+    _mcp.setFilter(MCP2515::RXF5,      false, CAN_ID_COMMAND);
 
     if (_mcp.setNormalMode() != MCP2515::ERROR_OK) {
         Serial.println(F("[CAN] setNormalMode failed"));
         _online = false;
+        _busOffRetryMs = millis() + CAN_RETRY_MS;
         return false;
     }
 
     _online        = true;
     _busOffRetryMs = 0;
+    _consecutiveTxFailures = 0;
     Serial.println(F("[CAN] MCP2515 online — 500 kbit/s"));
     return true;
 }
@@ -58,8 +73,8 @@ void CANBus::tick(LightState driverState, LightState passengerState,
         uint8_t eflg = _mcp.getErrorFlags();
         if (eflg & 0x20) {   // TXBO — bus-off
             _online        = false;
-            _busOffRetryMs = millis() + 250;
-            Serial.println(F("[CAN] bus-off detected — retry in 250 ms"));
+            _busOffRetryMs = millis() + CAN_RETRY_MS;
+            Serial.println(F("[CAN] bus-off detected — retry scheduled"));
         }
         if (eflg & 0xC0) {   // RX0OVR / RX1OVR — receive buffer overflow
             _mcp.clearRXnOVRFlags();
@@ -67,8 +82,8 @@ void CANBus::tick(LightState driverState, LightState passengerState,
         }
     }
     if (!_online) {
-        if (_busOffRetryMs != 0 && millis() >= _busOffRetryMs) {
-            Serial.println(F("[CAN] attempting bus-off recovery ..."));
+        if (deadlineReached(millis(), _busOffRetryMs)) {
+            Serial.println(F("[CAN] attempting controller recovery ..."));
             _initMCP();
         }
         return;  // skip TX/RX until bus is confirmed back online
@@ -83,8 +98,10 @@ void CANBus::tick(LightState driverState, LightState passengerState,
 
     // ── RX: drain all pending frames ────────────────────────────────────────
     struct can_frame frame;
-    while (_mcp.readMessage(&frame) == MCP2515::ERROR_OK) {
+    uint8_t framesRead = 0;
+    while (framesRead < 8 && _mcp.readMessage(&frame) == MCP2515::ERROR_OK) {
         _processFrame(frame);
+        ++framesRead;
     }
 }
 
@@ -118,7 +135,15 @@ void CANBus::_sendState(LightState driverState, LightState passengerState,
     frame.data[6]   = thermal.derateAmount();
 
     if (_mcp.sendMessage(&frame) != MCP2515::ERROR_OK) {
+        if (_consecutiveTxFailures < 255) ++_consecutiveTxFailures;
         Serial.println(F("[CAN] TX error"));
+        if (_consecutiveTxFailures >= CAN_TX_FAILURE_LIMIT) {
+            _online = false;
+            _busOffRetryMs = millis() + CAN_RETRY_MS;
+            Serial.println(F("[CAN] repeated TX failures — controller recovery scheduled"));
+        }
+    } else {
+        _consecutiveTxFailures = 0;
     }
 }
 

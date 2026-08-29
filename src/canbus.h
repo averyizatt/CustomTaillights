@@ -111,5 +111,6 @@ private:
     // Connection management
     bool          _spiStarted    = false;  // SPI.begin() called once; never repeated
     unsigned long _busOffRetryMs = 0;      // millis() target for next recovery attempt
+    uint8_t       _consecutiveTxFailures = 0;
     bool _initMCP();                       // (re)configure MCP2515 without re-opening SPI
 };
