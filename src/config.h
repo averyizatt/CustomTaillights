@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 // ---------------------------------------------------------------------------
 // config.h
@@ -58,6 +58,18 @@ static constexpr int SEG_OFFSET[NUM_SEGMENTS] = {
     2 * STRIP_LEDS,  // SEG_MAIN       (210)
 };
 
+// Both the DevKit and custom-PCB targets use this exact physical matrix.
+// Fail the build if a later board-specific edit accidentally changes it.
+static_assert(NUM_SEGMENTS == 3, "Taillight must have exactly three segments");
+static_assert(STRIP_ROWS == 5 && STRIP_COLS == 21 && STRIP_LEDS == 105,
+              "Top and bottom strip geometry must remain 21x5 (105 LEDs)");
+static_assert(MAIN_ROWS == 10 && MAIN_COLS == 17 && MAIN_LEDS == 170,
+              "Main-panel geometry must remain 17x10 (170 LEDs)");
+static_assert(SEG_OFFSET[0] == 0 && SEG_OFFSET[1] == 105 && SEG_OFFSET[2] == 210,
+              "Taillight segment offsets must remain 0, 105, and 210");
+static_assert(LEDS_PER_SIDE == 380,
+              "Each taillight must remain exactly 380 LEDs");
+
 // \u2500\u2500 Diffuser types per segment \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 // SEG_TOP_STRIP : clear plastic  \u2014 colours appear true
 // SEG_BOT_STRIP : red diffuser   \u2014 only the red channel passes through
@@ -75,9 +87,17 @@ inline CRGB applySegDiffuser(int seg, CRGB c) {
 }
 #endif
 
-// Data pins for each side
-static constexpr int  PIN_LED_DRIVER    = 20;  // GPIO20 → driver-side  taillight DIN
+// Data pins for each side. The PCB also routes a third, currently unused LED
+// data output so it can be assigned to a future strip without a board change.
+#if defined(CUSTOM_TAILLIGHTS_PCB)
+static constexpr int  PIN_LED_DRIVER    = 4;   // PCB LEDDATA1
+static constexpr int  PIN_LED_PASSENGER = 5;   // PCB LEDDATA2
+static constexpr int  PIN_LED_AUX       = 6;   // PCB LEDDATA3 (spare)
+#else
+static constexpr int  PIN_LED_DRIVER    = 20;  // GPIO20 → driver-side taillight DIN
 static constexpr int  PIN_LED_PASSENGER = 19;  // GPIO19 → passenger-side taillight DIN
+static constexpr int  PIN_LED_AUX       = -1;  // not routed in the DevKit build
+#endif
 
 // Global brightness (0-255).  Keep well below 255 to limit current draw.
 static constexpr uint8_t BRIGHTNESS_DEFAULT    = 128;
@@ -123,10 +143,20 @@ static constexpr uint32_t LED_POWER_BUDGET_MA = 12000;    // mA  (12.0 A soft ca
 //   O2 → reverse      → GPIO 7
 //   O3 → turn         → GPIO 4
 //   O4 → running/park → GPIO 6
+#if defined(CUSTOM_TAILLIGHTS_PCB)
+// The PCB exposes six optocoupler outputs. Brake, running and reverse are
+// vehicle-wide signals, so each shared input is intentionally used by both
+// side state machines. OPTGPIO6 remains available for future use.
+static constexpr int PIN_DRIVER_BRAKE   =  7;  // PCB OPTOGPIO1
+static constexpr int PIN_DRIVER_RUNNING = 15;  // PCB OPTOGPIO2
+static constexpr int PIN_DRIVER_TURN    = 16;  // PCB OPTOGPIO3
+static constexpr int PIN_DRIVER_REVERSE = 18;  // PCB OPTOGPIO5
+#else
 static constexpr int PIN_DRIVER_BRAKE   =  5;
 static constexpr int PIN_DRIVER_RUNNING =  6;
 static constexpr int PIN_DRIVER_TURN    =  4;
 static constexpr int PIN_DRIVER_REVERSE =  7;
+#endif
 
 // ── Passenger side (US right) ───────────────────────────────────────────────
 // Passenger-side opto
@@ -134,10 +164,23 @@ static constexpr int PIN_DRIVER_REVERSE =  7;
 //   O2 → reverse      → GPIO 10
 //   O3 → turn         → GPIO 3
 //   O4 → running/park → GPIO 9
+#if defined(CUSTOM_TAILLIGHTS_PCB)
+static constexpr int PIN_PASSENGER_BRAKE   =  7;  // shared OPTOGPIO1
+static constexpr int PIN_PASSENGER_RUNNING = 15;  // shared OPTOGPIO2
+static constexpr int PIN_PASSENGER_TURN    = 17;  // PCB OPTOGPIO4
+static constexpr int PIN_PASSENGER_REVERSE = 18;  // shared OPTOGPIO5
+static constexpr int PIN_OPTO_AUX           =  8;  // PCB OPTOGPIO6 (spare input)
+static constexpr int PIN_SPARE_1            = 46;  // PCB SPARE1
+static constexpr int PIN_SPARE_2            =  9;  // PCB SPARE2
+#else
 static constexpr int PIN_PASSENGER_BRAKE   = 46;
 static constexpr int PIN_PASSENGER_RUNNING =  9;
 static constexpr int PIN_PASSENGER_TURN    =  3;
 static constexpr int PIN_PASSENGER_REVERSE = 10;
+static constexpr int PIN_OPTO_AUX           = -1;
+static constexpr int PIN_SPARE_1            = -1;
+static constexpr int PIN_SPARE_2            = -1;
+#endif
 
 // Logic level when the stock signal is ACTIVE.
 // The optocoupler output drives the GPIO HIGH when the stock bulb circuit is
@@ -161,9 +204,6 @@ static constexpr unsigned long BLINK_MAX_EDGE_MS  = 900;
 static constexpr unsigned long BLINK_EXPIRE_MS    = 1800;
 static constexpr unsigned long HAZARD_SYNC_MS     = 150;
 
-// Throttled Serial diagnostics for input/state decisions.
-static constexpr bool SERIAL_INPUT_DEBUG = true;
-
 // ── Real-time safety infrastructure ─────────────────────────────────────────
 // Hardware Task Watchdog.  Both Core 0 (input task) and Core 1 (render task)
 // must call esp_task_wdt_reset() within this window, or the MCU performs a
@@ -179,7 +219,7 @@ static constexpr uint32_t INPUT_TASK_PERIOD_MS = 1;
 // The sensor reads ~5–10 °C above ambient inside the package under load;
 // these thresholds are chosen conservatively for an enclosed automotive install.
 static constexpr int   TEMP_SAMPLE_INTERVAL_MS = 5000;  // how often to sample
-static constexpr int   TEMP_DERATE_START_C     =   65;  // begin linear brightness reduction
+static constexpr int   TEMP_DERATE_START_C     =   75;  // begin linear brightness reduction
 static constexpr int   TEMP_DERATE_END_C       =   80;  // max derating applied here
 static constexpr int   TEMP_SHUTDOWN_C         =   85;  // above this: BRIGHTNESS_MIN_SAFETY
 
@@ -187,7 +227,11 @@ static constexpr int   TEMP_SHUTDOWN_C         =   85;  // above this: BRIGHTNES
 // Disabled by default so the taillight controller still boots and renders
 // signals on the bench if the MCP2515 module is missing, unpowered, or wired
 // differently. Set true only after CAN hardware is installed and verified.
+#if defined(CUSTOM_TAILLIGHTS_PCB)
+static constexpr bool CAN_ENABLED = true;
+#else
 static constexpr bool CAN_ENABLED = false;
+#endif
 
 // The common blue MCP2515 breakout connects to a custom SPI bus so it does
 // not conflict with any other peripheral.
@@ -203,11 +247,19 @@ static constexpr bool CAN_ENABLED = false;
 //
 // CAN bus bitrate — 500 kbit/s is standard for most automotive applications.
 // Change to CAN_250KBPS if the network is running at 250 kbit/s.
+#if defined(CUSTOM_TAILLIGHTS_PCB)
+static constexpr int PIN_CAN_SCK  = 41;  // MCP2515 SCK
+static constexpr int PIN_CAN_MOSI = 40;  // MCP2515 SI (controller input)
+static constexpr int PIN_CAN_MISO = 37;  // MCP2515 SO (controller output)
+static constexpr int PIN_CAN_CS   = 38;  // MCP2515 CS
+static constexpr int PIN_CAN_INT  = -1;  // PCB rework: GPIO35 isolated; driver polls MCP2515
+#else
 static constexpr int PIN_CAN_SCK  = 12;
 static constexpr int PIN_CAN_MOSI = 13;
 static constexpr int PIN_CAN_MISO = 14;
 static constexpr int PIN_CAN_CS   = 15;
 static constexpr int PIN_CAN_INT  = 16;
+#endif
 
 // ── CAN message IDs ──────────────────────────────────────────────────────────
 // 11-bit standard frame IDs used by this controller.
@@ -221,6 +273,7 @@ static constexpr uint32_t CAN_ID_FAULT           = 0x102;
 
 // How often (ms) the taillight state is broadcast on the bus
 static constexpr unsigned long CAN_BROADCAST_INTERVAL_MS = 100;
+
 
 // Rest-mode UI test pulse timing.
 static constexpr unsigned long REST_PULSE_HALF_CYCLE_MS = 300;

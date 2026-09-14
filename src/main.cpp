@@ -1,4 +1,4 @@
-﻿// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // main.cpp
 // ESP32-S3 Custom Foxbody Mustang Taillight Controller
 //
@@ -865,8 +865,8 @@ void setup() {
     // setup() from ever reaching the input/render loop.
     if (CAN_ENABLED) {
         Serial.println(F("[boot] init CAN"));
-        canBus.begin();
-        Serial.println(F("[boot] CAN init returned"));
+        const bool canReady = canBus.begin();
+        Serial.printf("[boot] CAN init returned: %s\n", canReady ? "PASS" : "FAIL");
 
         // ── Boot fault reporting over CAN ───────────────────────────────────
         // Faults detected before CAN was up are reported here as one-shots.
@@ -954,7 +954,7 @@ void loop() {
         static uint8_t prevThermalFault = FAULT_NONE;
         uint8_t newFault = FAULT_NONE;
         float   t        = thermal.tempC();
-        if (t >= TEMP_SHUTDOWN_C)      newFault = FAULT_THERMAL_CRITICAL;
+        if (t >= TEMP_SHUTDOWN_C) newFault = FAULT_THERMAL_CRITICAL;
         else if (t >= TEMP_DERATE_START_C) newFault = FAULT_THERMAL_WARN;
 
         if (CAN_ENABLED && newFault != prevThermalFault) {
@@ -971,8 +971,7 @@ void loop() {
     }
 
     // Determine target brightness: prefer CAN override, else default.
-    // Always pass through thermal derating — it is never bypassed, even
-    // by a CAN command, so safety-critical lights always remain visible.
+    // Always apply thermal brightness protection, including CAN overrides.
     const bool canBrightnessChanged = CAN_ENABLED && canBus.brightnessChanged();
     uint8_t targetBrightness = canBrightnessChanged
                              ? canBus.brightness()
@@ -986,8 +985,6 @@ void loop() {
     // a coherent set of flags from a single debounce cycle.
     uint8_t ds = inputs.driverSnapshot();
     uint8_t ps = inputs.passengerSnapshot();
-    const uint8_t drs = inputs.driverRawSnapshot();
-    const uint8_t prs = inputs.passengerRawSnapshot();
 
     g_live_driver_inputs = ds;
     g_live_passenger_inputs = ps;
@@ -1033,60 +1030,6 @@ void loop() {
     if (g_settings.rest_mode && ds == 0 && ps == 0) {
         driverState = LightState::RUNNING;
         passengerState = LightState::RUNNING;
-    }
-
-    if (SERIAL_INPUT_DEBUG) {
-        static uint8_t lastDs = 0xFF;
-        static uint8_t lastPs = 0xFF;
-        static uint8_t lastDrs = 0xFF;
-        static uint8_t lastPrs = 0xFF;
-        static bool lastDriverBlink = false;
-        static bool lastPassengerBlink = false;
-        static bool lastHazardBlinking = false;
-        static LightState lastDriverState = LightState::CUSTOM;
-        static LightState lastPassengerState = LightState::CUSTOM;
-        static uint8_t lastSafeBrightness = 0xFF;
-        static unsigned long lastLogMs = 0;
-
-        const bool changed = ds != lastDs || ps != lastPs || drs != lastDrs || prs != lastPrs
-                          || driverBlink.blinking != lastDriverBlink
-                          || passengerBlink.blinking != lastPassengerBlink
-                          || hazardBlinking != lastHazardBlinking
-                          || driverState != lastDriverState
-                          || passengerState != lastPassengerState
-                          || safeBrightness != lastSafeBrightness;
-        if (changed || (nowMs - lastLogMs) >= 1000UL) {
-            const uint16_t driverFinalBrightness =
-                ((uint16_t)safeBrightness * BRIGHTNESS_SCALE_DRIVER) / 255;
-            const uint16_t passengerFinalBrightness =
-                ((uint16_t)safeBrightness * BRIGHTNESS_SCALE_PASSENGER) / 255;
-            Serial.printf("[inputs] raw D=%02X P=%02X debounced D=%02X P=%02X "
-                          "steady brake=%u run=%u rev=%u blink D=%u P=%u hazard=%u state D=%s P=%s "
-                          "brightness D=%u P=%u global=%u\n",
-                          drs, prs, ds, ps,
-                          brakeActive ? 1 : 0,
-                          runningActive ? 1 : 0,
-                          reverseActive ? 1 : 0,
-                          driverBlink.blinking ? 1 : 0,
-                          passengerBlink.blinking ? 1 : 0,
-                          hazardBlinking ? 1 : 0,
-                          lightStateName(driverState),
-                          lightStateName(passengerState),
-                          driverFinalBrightness,
-                          passengerFinalBrightness,
-                          safeBrightness);
-            lastDs = ds;
-            lastPs = ps;
-            lastDrs = drs;
-            lastPrs = prs;
-            lastDriverBlink = driverBlink.blinking;
-            lastPassengerBlink = passengerBlink.blinking;
-            lastHazardBlinking = hazardBlinking;
-            lastDriverState = driverState;
-            lastPassengerState = passengerState;
-            lastSafeBrightness = safeBrightness;
-            lastLogMs = nowMs;
-        }
     }
 
     // ── CAN bus tick (TX broadcast + RX command processing) ─────────────────

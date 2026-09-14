@@ -22,8 +22,6 @@ public:
     // Written as a single atomic byte store at the end of every update().
     uint8_t driverSnapshot()  const { return _driverSnapshot;  }
     uint8_t passengerSnapshot() const { return _passengerSnapshot; }
-    uint8_t driverRawSnapshot() const { return _driverRawSnapshot; }
-    uint8_t passengerRawSnapshot() const { return _passengerRawSnapshot; }
 
     // ── Left-side debounced accessors ────────────────────────────────────────
     bool driverBrake()   const { return _driverBrake;   }
@@ -69,8 +67,6 @@ private:
     // Bit layout: bit0=brake  bit1=running  bit2=turn  bit3=reverse
     volatile uint8_t _driverSnapshot  = 0;
     volatile uint8_t _passengerSnapshot = 0;
-    volatile uint8_t _driverRawSnapshot  = 0;
-    volatile uint8_t _passengerRawSnapshot = 0;
 
     // Debounce a single channel; returns true if state changed
     bool _debounce(Channel& ch);

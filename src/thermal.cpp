@@ -12,6 +12,7 @@ void ThermalManager::begin() {
     _derateAmount = 0;
     _shutdown     = false;
 
+
     Serial.print(F("[thermal] initial die temp: "));
     Serial.print(_tempC, 1);
     Serial.println(F(" °C"));
@@ -23,6 +24,7 @@ void ThermalManager::tick(unsigned long nowMs) {
     _lastSampleMs = nowMs;
 
     _tempC = static_cast<float>(temperatureRead());
+
 
     // ── Shutdown zone (> TEMP_SHUTDOWN_C) ────────────────────────────────────
     if (_tempC >= static_cast<float>(TEMP_SHUTDOWN_C)) {

@@ -130,7 +130,7 @@ The DevKit's built-in WS2812B pixel reflects the current system health at a glan
 | Blue | Slow blink (400 ms) | Crank holdoff — waiting for supply to stabilise |
 | Green | Solid | All systems normal |
 | Orange | Blink (300 ms) | CAN bus offline / MCP2515 not responding |
-| Yellow | Solid | Temperature derating active (die ≥ 65 °C) |
+| Yellow | Solid | Temperature derating active (die ≥ 75 °C) |
 | Red | Solid | Thermal shutdown — LEDs at safety minimum (die ≥ 85 °C) |
 | Red | Fast blink (150 ms) | Prior WDT/panic resets in NVS — clears after 10 s |
 | Red | Solid (brief, on reset) | Watchdog firing / system restarting |
@@ -167,7 +167,7 @@ The MCP2515 runs at **500 kbps** by default. Three CAN frame IDs are used:
 
 | Code | Name | Severity | Notes |
 |------|------|----------|-------|
-| `0x01` | `FAULT_THERMAL_WARN` | WARNING | Die temp ≥ `TEMP_DERATE_START_C` (65 °C) |
+| `0x01` | `FAULT_THERMAL_WARN` | WARNING | Die temp ≥ `TEMP_DERATE_START_C` (75 °C) |
 | `0x02` | `FAULT_THERMAL_CRITICAL` | CRITICAL | Die temp ≥ `TEMP_SHUTDOWN_C` (85 °C) |
 | `0x03` | `FAULT_CAN_BUS_OFF` | CRITICAL | MCP2515 bus-off condition |
 | `0x04` | `FAULT_INPUT_STUCK_BOOT` | WARNING | Input active at power-on (possible wiring short) |
@@ -181,7 +181,7 @@ Fault frames are reported once on state change — not spammed every broadcast c
 
 ## Thermal management
 
-The ESP32-S3 on-die temperature sensor is sampled every 5 seconds. Brightness is linearly derated between **65 °C** and **80 °C**, and hard-clamped to `BRIGHTNESS_MIN_SAFETY` (30) above **85 °C** — LEDs stay on at minimum brightness so brake and turn signals remain visible even at shutdown temperature. Thermal derating is never bypassed by a CAN brightness command.
+The ESP32-S3 on-die temperature sensor is sampled every 5 seconds. Brightness is linearly derated between **75 °C** and **80 °C**, and hard-clamped to `BRIGHTNESS_MIN_SAFETY` (30) above **85 °C** — LEDs stay on at minimum brightness so brake and turn signals remain visible even at shutdown temperature. Thermal derating is never bypassed by a CAN brightness command.
 
 ---
 
@@ -245,6 +245,44 @@ pio run                    # compile
 pio run --target upload    # flash over USB
 pio device monitor         # open serial monitor (115200 baud)
 ```
+
+### Custom PCB build
+
+The original DevKit build remains `esp32-s3`. The separate `esp32-s3-pcb`
+environment selects the custom PCB pinout and enables its onboard MCP2515.
+It uses the same 21x5 top strip, 21x5 bottom strip, 17x10 main panel,
+380-LED-per-side buffers, serpentine mapping, mirroring, and animations as the
+original build:
+
+```bash
+pio run -e esp32-s3-pcb
+pio run -e esp32-s3-pcb --target upload
+```
+
+PCB mapping used by this build:
+
+| PCB net | GPIO | Firmware use |
+|---------|------|--------------|
+| LEDDATA1 / LEDDATA2 | 4 / 5 | Driver / passenger taillight |
+| LEDDATA3 | 6 | Spare LED data output (`PIN_LED_AUX`) |
+| OPTOGPIO1 / 2 | 7 / 15 | Shared brake / running input |
+| OPTOGPIO3 / 4 | 16 / 17 | Driver / passenger turn input |
+| OPTOGPIO5 | 18 | Shared reverse input |
+| OPTOGPIO6 | 8 | Spare opto input (`PIN_OPTO_AUX`); no lighting function assigned |
+| CAN_CS / MISO / MOSI / SCK | 38 / 37 / 40 / 41 | MCP2515 (SO = MISO, SI = MOSI) |
+| CAN_INT | Disconnected | MCP2515 is polled; original GPIO35 trace is isolated |
+| SPARE1 / SPARE2 | 46 / 9 | General-purpose spare I/O |
+
+The spare pins are named but deliberately left unconfigured so attached future
+hardware cannot be driven accidentally. If the PCB connector wiring assigns the
+six opto channels differently, only the PCB block in `src/config.h` needs to be
+reordered.
+
+The MCP2515 starts in normal mode at 500 kbit/s with an 8 MHz oscillator.
+Normal startup and fault reporting remain available over Serial at 115200 baud.
+Temporary CAN loopback/health diagnostics and optocoupler change logging have
+been removed. OPTO6 remains unassigned. Thermal brightness protection is active:
+dim above 75 C, maximum derating at 80 C, and safety-minimum brightness at 85 C.
 
 ### Bench self-test mode
 

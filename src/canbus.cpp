@@ -1,4 +1,4 @@
-﻿// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // canbus.cpp
 // MCP2515 SPI CAN bus interface.
 // ---------------------------------------------------------------------------
@@ -18,12 +18,16 @@ bool CANBus::begin() {
         SPI.begin(PIN_CAN_SCK, PIN_CAN_MISO, PIN_CAN_MOSI, PIN_CAN_CS);
         _spiStarted = true;
     }
+
     return _initMCP();
 }
 
-// ---------------------------------------------------------------------------
 bool CANBus::_initMCP() {
-    _mcp.reset();
+    if (_mcp.reset() != MCP2515::ERROR_OK) {
+        Serial.println(F("[CAN] reset/config readback failed"));
+        _online = false;
+        return false;
+    }
 
     if (_mcp.setBitrate(CAN_500KBPS, MCP_8MHZ) != MCP2515::ERROR_OK) {
         Serial.println(F("[CAN] setBitrate failed — check module / clock"));
@@ -32,8 +36,12 @@ bool CANBus::_initMCP() {
     }
 
     // Accept only CAN_ID_COMMAND frames; mask & filter on bits 10:0.
-    _mcp.setFilterMask(MCP2515::MASK0, false, 0x7FF);
-    _mcp.setFilter(MCP2515::RXF0,      false, CAN_ID_COMMAND);
+    if (_mcp.setFilterMask(MCP2515::MASK0, false, 0x7FF) != MCP2515::ERROR_OK
+        || _mcp.setFilter(MCP2515::RXF0, false, CAN_ID_COMMAND) != MCP2515::ERROR_OK) {
+        Serial.println(F("[CAN] command filter configuration failed"));
+        _online = false;
+        return false;
+    }
 
     if (_mcp.setNormalMode() != MCP2515::ERROR_OK) {
         Serial.println(F("[CAN] setNormalMode failed"));
@@ -50,6 +58,8 @@ bool CANBus::_initMCP() {
 // ---------------------------------------------------------------------------
 void CANBus::tick(LightState driverState, LightState passengerState,
                   const Inputs& inputs, const ThermalManager& thermal) {
+    const unsigned long nowMs = millis();
+
     // ── Bus-off detection and recovery ───────────────────────────────────────────
     // EFLG bit5 = TXBO (transmit bus-off).  This happens when the TX error
     // counter reaches 256 — usually a wiring fault or missing termination.
@@ -75,7 +85,6 @@ void CANBus::tick(LightState driverState, LightState passengerState,
     }
 
     // ── TX: periodic state broadcast ────────────────────────────────────────
-    unsigned long nowMs = millis();
     if (nowMs - _lastBroadcastMs >= CAN_BROADCAST_INTERVAL_MS) {
         _lastBroadcastMs = nowMs;
         _sendState(driverState, passengerState, inputs, thermal);
@@ -86,6 +95,7 @@ void CANBus::tick(LightState driverState, LightState passengerState,
     while (_mcp.readMessage(&frame) == MCP2515::ERROR_OK) {
         _processFrame(frame);
     }
+
 }
 
 // ---------------------------------------------------------------------------
