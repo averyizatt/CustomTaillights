@@ -287,3 +287,19 @@ dim above 75 C, maximum derating at 80 C, and safety-minimum brightness at 85 C.
 ### Bench self-test mode
 
 Hold the **driver-side running/park** optocoupler input active while applying power. The controller will run a full segment ID flash, pixel chaser, and RGB colour verify (~5 s), followed by a full light-state cycle. Release the line to resume normal operation. This mode is intentionally skipped on every normal in-car boot so brake lights are live as quickly as possible.
+
+### Shared CAN compatibility
+
+The unchanged CCM shared contract is vendored in `include/can_contract/can_protocol.h`.
+It retains standard 11-bit IDs at 500 kbit/s: state `0x100` (100 ms), commands
+`0x101`, and faults `0x102`. No CCM or water/meth protocol changes are required.
+The seven-byte state payload is left state, right state, input flags, applied
+brightness, temperature +40, derating percent, and reserved status flags (zero).
+The existing driver input bits in byte 2 are preserved; the shared contract does
+not assign additional per-side input or status bits. Temperature is clamped to
+-40..127 C to match the shared decoder's signed range.
+
+CAN brightness commands remain active until another brightness command or a
+restart. Thermal protection applies every loop, and telemetry reports the applied
+brightness. Command `0x03` still clears only the animation override. Custom
+animation IDs retain their existing taillight meanings.

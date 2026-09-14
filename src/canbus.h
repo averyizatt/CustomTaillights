@@ -13,21 +13,6 @@
 //        Cmd 0x02 — animation override     (byte 1 = left state, byte 2 = right state)
 //        Cmd 0x03 — clear animation override
 //
-// Typical usage (main.cpp)
-// ─────────────────────────
-//   canBus.begin();
-//   // in loop:
-//   canBus.tick(driverState, passengerState, inputs);
-//   if (canBus.hasOverride()) {
-//       driverState  = canBus.overrideDriver();
-//       passengerState = canBus.overridePassenger();
-//   }
-//   if (canBus.brightnessChanged()) {
-//       FastLED.setBrightness(canBus.brightness());
-//       canBus.clearBrightnessChanged();
-//   }
-// ---------------------------------------------------------------------------
-
 #include <Arduino.h>
 #include <SPI.h>
 #include <mcp2515.h>
@@ -37,6 +22,7 @@
 #include "thermal.h"
 #include "faults.h"
 #include "can_protocol.h"
+#include "can_state.h"
 #include "animations.h"
 
 class CANBus {
@@ -49,7 +35,8 @@ public:
     //   inputs                 — raw input object (used to build raw-flags bytes)
     //   thermal                — included in broadcast payload
     void tick(LightState driverState, LightState passengerState,
-              const Inputs& inputs, const ThermalManager& thermal);
+              const Inputs& inputs, const ThermalManager& thermal,
+              uint8_t appliedBrightness);
 
     // ── Animation override ───────────────────────────────────────────────────
     // True after a Cmd 0x02 is received and before Cmd 0x03 clears it.
@@ -58,11 +45,11 @@ public:
     LightState overridePassenger() const { return _overridePassenger; }  // passenger side (US right)
 
     // ── Brightness override ──────────────────────────────────────────────────
-    // brightnessChanged() is set to true when a Cmd 0x01 arrives.
-    // Call clearBrightnessChanged() after you have applied the value.
-    bool    brightnessChanged()      const { return _brightnessChanged; }
-    uint8_t brightness()             const { return _brightness; }
-    void    clearBrightnessChanged()       { _brightnessChanged = false; }
+    // Last CAN command remains active until replaced or the controller restarts.
+    // Apply thermal limiting to this requested value every loop.
+    uint8_t requestedBrightness(uint8_t fallback) const {
+        return _brightness.requested(fallback);
+    }
 
     // True if begin() succeeded and the MCP2515 is online
     bool isOnline() const { return _online; }
@@ -91,7 +78,8 @@ private:
     // TX
     unsigned long _lastBroadcastMs = 0;
     void _sendState(LightState driverState, LightState passengerState,
-                    const Inputs& inputs, const ThermalManager& thermal);
+                    const Inputs& inputs, const ThermalManager& thermal,
+              uint8_t appliedBrightness);
 
     // RX
     void _processFrame(const struct can_frame& frame);
@@ -105,11 +93,11 @@ private:
     bool _hasCustomAnim = false;
 
     // Brightness
-    bool    _brightnessChanged = false;
-    uint8_t _brightness        = BRIGHTNESS_DEFAULT;
+    taillight_can::BrightnessOverride _brightness;
 
     // Connection management
     bool          _spiStarted    = false;  // SPI.begin() called once; never repeated
     unsigned long _busOffRetryMs = 0;      // millis() target for next recovery attempt
+    uint8_t       _consecutiveTxFailures = 0;
     bool _initMCP();                       // (re)configure MCP2515 without re-opening SPI
 };

@@ -972,13 +972,11 @@ void loop() {
 
     // Determine target brightness: prefer CAN override, else default.
     // Always apply thermal brightness protection, including CAN overrides.
-    const bool canBrightnessChanged = CAN_ENABLED && canBus.brightnessChanged();
-    uint8_t targetBrightness = canBrightnessChanged
-                             ? canBus.brightness()
+    uint8_t targetBrightness = CAN_ENABLED
+                             ? canBus.requestedBrightness(g_settings.brightness)
                              : g_settings.brightness;
     uint8_t safeBrightness = thermal.applyBrightness(targetBrightness);
     FastLED.setBrightness(safeBrightness);
-    if (canBrightnessChanged) canBus.clearBrightnessChanged();
 
     // Input is polled by the input task on Core 0.  Read the atomic snapshots
     // (single-byte loads — guaranteed atomic on Xtensa LX7) so we always see
@@ -1030,11 +1028,6 @@ void loop() {
     if (g_settings.rest_mode && ds == 0 && ps == 0) {
         driverState = LightState::RUNNING;
         passengerState = LightState::RUNNING;
-    }
-
-    // ── CAN bus tick (TX broadcast + RX command processing) ─────────────────
-    if (CAN_ENABLED) {
-        canBus.tick(driverState, passengerState, inputs, thermal);
     }
 
     // ── State override priority (highest → lowest) ───────────────────────────
@@ -1098,6 +1091,12 @@ void loop() {
                                       : LightState::OFF;
         if (!brakeActive && !reverseActive) driverState    = pulseState;
         if (!brakeActive && !reverseActive) passengerState = pulseState;
+    }
+
+    // Broadcast the effective states and thermally limited brightness used below.
+    // Commands received here take effect on the next loop iteration.
+    if (CAN_ENABLED) {
+        canBus.tick(driverState, passengerState, inputs, thermal, safeBrightness);
     }
 
     // ── Status LED ──────────────────────────────────────────────────────────
