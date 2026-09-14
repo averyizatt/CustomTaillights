@@ -758,6 +758,7 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
           <option value="3">Strobe Flash &mdash; rapid 8 Hz attention strobe</option>
           <option value="4">Outer-In Fill &mdash; sweeps from edges to center then holds</option>
           <option value="5">Heartbeat &mdash; lub-dub double-pulse pattern</option>
+          <option value="6">Edge Lock &mdash; instant bright brake, border locks to solid</option>
         </select>
       </div>
       <div class="field">
@@ -769,6 +770,8 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
           <option value="3">Bounce Sweep &mdash; Knight Rider beam bounces across</option>
           <option value="4">Split Out &mdash; dual sweep races from center to edges</option>
           <option value="5">Fast Chase &mdash; rapid triple-flash per blink</option>
+          <option value="6">Arrowhead Sweep &mdash; outward chevron fill, then hold</option>
+          <option value="7">Three-Bar Relay &mdash; three outward bars, then hold</option>
         </select>
       </div>
       <div class="field">
@@ -787,6 +790,8 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
           <option value="1">Breathe &mdash; slow pulse dim glow</option>
           <option value="2">Shimmer &mdash; subtle per-pixel brightness variation</option>
           <option value="3">Slow Comet &mdash; very dim wandering comet</option>
+          <option value="4">Contour Glide &mdash; outlined panels with a slow highlight</option>
+          <option value="5">Fox Louvers &mdash; three raked blades with a soft sheen</option>
         </select>
       </div>
     </div>
@@ -962,6 +967,9 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
           <button class="anim-tile" onclick="selectAnim(30)"><span class="anim-tile__name">Radar Sweep</span><span class="anim-tile__desc">Sweeping column scanner</span></button>
           <button class="anim-tile" onclick="selectAnim(31)"><span class="anim-tile__name">Aurora</span><span class="anim-tile__desc">Flowing northern lights</span></button>
           <button class="anim-tile" onclick="selectAnim(32)"><span class="anim-tile__name">Glitch</span><span class="anim-tile__desc">Digital colour disruption</span></button>
+          <button class="anim-tile" onclick="selectAnim(33)"><span class="anim-tile__name">Afterburner</span><span class="anim-tile__desc">Glowing exhaust rings and amber jets</span></button>
+          <button class="anim-tile" onclick="selectAnim(34)"><span class="anim-tile__name">Tunnel Grid</span><span class="anim-tile__desc">Perspective gates and converging rails</span></button>
+          <button class="anim-tile" onclick="selectAnim(35)"><span class="anim-tile__name">Apex Weave</span><span class="anim-tile__desc">Interlaced diagonal ribbons</span></button>
         </div>
       </div>
       <div class="field field--last" id="show-text-row" style="display:none">
@@ -1174,6 +1182,9 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
           <button class="anim-tile preview-trigger" onclick="previewShow(30)"><span class="anim-tile__name">Radar Sweep</span><span class="anim-tile__desc">Sweeping column scanner</span></button>
           <button class="anim-tile preview-trigger" onclick="previewShow(31)"><span class="anim-tile__name">Aurora</span><span class="anim-tile__desc">Flowing northern lights</span></button>
           <button class="anim-tile preview-trigger" onclick="previewShow(32)"><span class="anim-tile__name">Glitch</span><span class="anim-tile__desc">Digital colour disruption</span></button>
+          <button class="anim-tile preview-trigger" onclick="previewShow(33)"><span class="anim-tile__name">Afterburner</span><span class="anim-tile__desc">Glowing exhaust rings and amber jets</span></button>
+          <button class="anim-tile preview-trigger" onclick="previewShow(34)"><span class="anim-tile__name">Tunnel Grid</span><span class="anim-tile__desc">Perspective gates and converging rails</span></button>
+          <button class="anim-tile preview-trigger" onclick="previewShow(35)"><span class="anim-tile__name">Apex Weave</span><span class="anim-tile__desc">Interlaced diagonal ribbons</span></button>
       </div>
     </div>
   </div>
@@ -1326,7 +1337,8 @@ var PREVIEW_FAVORITES = [0, 5, 26, 27];
 var PREVIEW_ANIM_CATS = [
   'show','show','warning','warning','aggressive','warning','warning','show','subtle','show','warning',
   'show','show','subtle','subtle','warning','subtle','show','subtle','show','show','subtle','show',
-  'warning','subtle','aggressive','aggressive','aggressive','show','aggressive','warning','subtle','aggressive'
+  'warning','subtle','aggressive','aggressive','aggressive','show','aggressive','warning','subtle','aggressive',
+  'aggressive','show','show'
 ];
 
 function setPreviewBusy(busy) {
@@ -2103,13 +2115,13 @@ static void handlePostSettings() {
     if (doc["reverse_b"].is<int>()) g_settings.reverse_b = (uint8_t)constrain(doc["reverse_b"].as<int>(), 0, 255);
 
     if (doc["brake_anim"].is<int>())
-        g_settings.brake_anim   = (uint8_t)constrain(doc["brake_anim"].as<int>(),   0, 5);
+        g_settings.brake_anim   = (uint8_t)constrain(doc["brake_anim"].as<int>(),   0, BRAKE_ANIM_MAX);
     if (doc["turn_anim"].is<int>())
-        g_settings.turn_anim    = (uint8_t)constrain(doc["turn_anim"].as<int>(),    0, 5);
+        g_settings.turn_anim    = (uint8_t)constrain(doc["turn_anim"].as<int>(),    0, TURN_ANIM_MAX);
     if (doc["reverse_anim"].is<int>())
-        g_settings.reverse_anim = (uint8_t)constrain(doc["reverse_anim"].as<int>(), 0, 3);
+        g_settings.reverse_anim = (uint8_t)constrain(doc["reverse_anim"].as<int>(), 0, REVERSE_ANIM_MAX);
     if (doc["run_anim"].is<int>())
-        g_settings.run_anim     = (uint8_t)constrain(doc["run_anim"].as<int>(),     0, 3);
+        g_settings.run_anim     = (uint8_t)constrain(doc["run_anim"].as<int>(),     0, RUN_ANIM_MAX);
     if (doc["lens_preset"].is<int>())
         g_settings.lens_preset  = (uint8_t)constrain(doc["lens_preset"].as<int>(),  0, 3);
 
@@ -2126,7 +2138,7 @@ static void handlePostSettings() {
     if (doc["show_mode"].is<int>())
         g_settings.show_mode  = (uint8_t)constrain(doc["show_mode"].as<int>(), 0, 1);
     if (doc["show_anim"].is<int>())
-        g_settings.show_anim  = (uint8_t)constrain(doc["show_anim"].as<int>(), 0, 32);
+        g_settings.show_anim  = (uint8_t)constrain(doc["show_anim"].as<int>(), 0, SHOW_ANIM_MAX);
     if (doc["show_speed"].is<int>())
         g_settings.show_speed = (uint8_t)constrain(doc["show_speed"].as<int>(), 50, 200);
     if (doc["show_text"].is<const char*>()) {
@@ -2297,7 +2309,7 @@ static void handlePreview() {
     else if (strcmp(s, "show")        == 0) {
         // Optional anim index — update show_anim so the correct effect plays
         if (doc["anim"].is<int>()) {
-            g_settings.show_anim = (uint8_t)constrain(doc["anim"].as<int>(), 0, 32);
+            g_settings.show_anim = (uint8_t)constrain(doc["anim"].as<int>(), 0, SHOW_ANIM_MAX);
         }
         ld = LightState::SHOW;
         lp = LightState::SHOW;

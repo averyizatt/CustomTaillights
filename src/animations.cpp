@@ -9,6 +9,14 @@
 #include "settings.h"
 
 // ── Static instance definitions ─────────────────────────────────────────────
+AnimRunContour AnimationRegistry::_runContour;
+AnimRunLouvers AnimationRegistry::_runLouvers;
+AnimBrakeEdgeLock AnimationRegistry::_brakeEdgeD, AnimationRegistry::_brakeEdgeP;
+AnimTurnArrowhead AnimationRegistry::_turnArrowD, AnimationRegistry::_turnArrowP;
+AnimTurnThreeBar AnimationRegistry::_turnThreeD, AnimationRegistry::_turnThreeP;
+AnimShowAfterburner AnimationRegistry::_showAfterburner;
+AnimShowTunnel AnimationRegistry::_showTunnel;
+AnimShowApexWeave AnimationRegistry::_showApexWeave;
 AnimOff        AnimationRegistry::_off;
 AnimRunning    AnimationRegistry::_running;
 AnimRunBreathe AnimationRegistry::_runBreathe;
@@ -104,6 +112,8 @@ Animation* AnimationRegistry::get(LightState state, bool isDriver) {
                 case 1: return &_runBreathe;
                 case 2: return &_runShimmer;
                 case 3: return &_runComet;
+                case 4: return &_runContour;
+                case 5: return &_runLouvers;
                 default: return &_running;
             }
 
@@ -114,6 +124,7 @@ Animation* AnimationRegistry::get(LightState state, bool isDriver) {
                 case 3: return &_brakeStrobe;
                 case 4: return isDriver ? static_cast<Animation*>(&_brakeOuterInD) : static_cast<Animation*>(&_brakeOuterInP);
                 case 5: return &_brakeHeartbeat;
+                case 6: return isDriver ? static_cast<Animation*>(&_brakeEdgeD) : static_cast<Animation*>(&_brakeEdgeP);
                 default: return &_brake;
             }
 
@@ -125,6 +136,8 @@ Animation* AnimationRegistry::get(LightState state, bool isDriver) {
                 case 3: return isDriver ? static_cast<Animation*>(&_turnBounceD)  : static_cast<Animation*>(&_turnBounceP);
                 case 4: return isDriver ? static_cast<Animation*>(&_turnSplitD)   : static_cast<Animation*>(&_turnSplitP);
                 case 5: return isDriver ? static_cast<Animation*>(&_turnFastD)    : static_cast<Animation*>(&_turnFastP);
+                case 6: return isDriver ? static_cast<Animation*>(&_turnArrowD) : static_cast<Animation*>(&_turnArrowP);
+                case 7: return isDriver ? static_cast<Animation*>(&_turnThreeD) : static_cast<Animation*>(&_turnThreeP);
                 default: return isDriver ? static_cast<Animation*>(&_turnDriver)  : static_cast<Animation*>(&_turnPassenger);
             }
 
@@ -172,6 +185,9 @@ Animation* AnimationRegistry::get(LightState state, bool isDriver) {
                 case 30: return &_showRadar;
                 case 31: return &_showAurora;
                 case 32: return &_showGlitch;
+                case 33: return &_showAfterburner;
+                case 34: return &_showTunnel;
+                case 35: return &_showApexWeave;
                 default: return &_showRainbow;
             }
 

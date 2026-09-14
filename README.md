@@ -303,3 +303,31 @@ CAN brightness commands remain active until another brightness command or a
 restart. Thermal protection applies every loop, and telemetry reports the applied
 brightness. Command `0x03` still clears only the animation override. Custom
 animation IDs retain their existing taillight meanings.
+
+### Matrix animation collection
+
+Eight optional effects use the existing two 21x5 strips and 17x10 panel per side.
+The passenger lamp mirrors through `TailLight::setPixel`, and the lower two
+segments retain their red-diffuser filtering. Existing IDs and default selections
+are unchanged.
+
+| Menu | ID | Name | Behavior |
+| --- | --- | --- | --- |
+| Running | 4 | Contour Glide | Stable outlines with a slow perimeter highlight |
+| Running | 5 | Fox Louvers | Three raked blades and strip rails with a soft sheen |
+| Brake | 6 | Edge Lock | Immediate bright fill; edges settle inward to full solid within 240 ms |
+| Turn | 6 | Arrowhead Sweep | Inboard-to-outboard chevron fill, hold, then off |
+| Turn | 7 | Three-Bar Relay | Three outboard-latching groups, hold, then off |
+| Show / Preview | 33 | Afterburner | Warm exhaust rings across the three matrices |
+| Show / Preview | 34 | Tunnel Grid | Perspective gates and converging guide rails |
+| Show / Preview | 35 | Apex Weave | Interlaced diagonal ribbons with alternating crossings |
+
+New running effects obey the running brightness cap. The new turn effects keep
+both lower red sections solid during BRAKE_TURN and animate the clear top strip.
+Show/preview effects retain the existing brake and reverse override rules. All
+output still passes through the thermal and LED power limits.
+
+Native geometry and rendering tests plus an exporter for a standalone animated
+preview are documented in `test/test_matrix_animations/README.md`. The preview
+is generated from the actual C++ effects and pixel mapping, with schematic lens
+colors rather than a physical optical simulation.

@@ -122,15 +122,15 @@ void settings_load() {
     g_settings.turn_blink_ms  = (uint16_t)constrain((int)g_settings.turn_blink_ms, 200, 1500);
     g_settings.frame_ms       = (uint8_t)constrain(g_settings.frame_ms, 10, 100);
 
-    g_settings.brake_anim     = (uint8_t)constrain(g_settings.brake_anim, 0, 5);
-    g_settings.turn_anim      = (uint8_t)constrain(g_settings.turn_anim, 0, 5);
-    g_settings.reverse_anim   = (uint8_t)constrain(g_settings.reverse_anim, 0, 3);
-    g_settings.run_anim       = (uint8_t)constrain(g_settings.run_anim, 0, 3);
+    g_settings.brake_anim     = (uint8_t)constrain(g_settings.brake_anim, 0, BRAKE_ANIM_MAX);
+    g_settings.turn_anim      = (uint8_t)constrain(g_settings.turn_anim, 0, TURN_ANIM_MAX);
+    g_settings.reverse_anim   = (uint8_t)constrain(g_settings.reverse_anim, 0, REVERSE_ANIM_MAX);
+    g_settings.run_anim       = (uint8_t)constrain(g_settings.run_anim, 0, RUN_ANIM_MAX);
     g_settings.lens_preset    = (uint8_t)constrain(g_settings.lens_preset, 0, 3);
     g_settings.startup_anim   = (uint8_t)constrain(g_settings.startup_anim, 0, 1);
     g_settings.rest_mode      = (uint8_t)constrain(g_settings.rest_mode, 0, 1);
     g_settings.show_mode      = 0;
-    g_settings.show_anim      = (uint8_t)constrain(g_settings.show_anim, 0, 32);
+    g_settings.show_anim      = (uint8_t)constrain(g_settings.show_anim, 0, SHOW_ANIM_MAX);
     g_settings.show_speed     = (uint8_t)constrain(g_settings.show_speed, 50, 200);
     g_settings.wifi_mode      = (uint8_t)constrain(g_settings.wifi_mode, 0, 1);
 }
