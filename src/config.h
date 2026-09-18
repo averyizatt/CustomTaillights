@@ -92,8 +92,8 @@ inline CRGB applySegDiffuser(int seg, CRGB c) {
 // data output so it can be assigned to a future strip without a board change.
 #if defined(CUSTOM_TAILLIGHTS_PCB)
 static constexpr int  PIN_LED_DRIVER    = 4;   // PCB LEDDATA1
-static constexpr int  PIN_LED_PASSENGER = 5;   // PCB LEDDATA2
-static constexpr int  PIN_LED_AUX       = 6;   // PCB LEDDATA3 (spare)
+static constexpr int  PIN_LED_PASSENGER = 6;   // PCB LEDDATA3
+static constexpr int  PIN_LED_AUX       = 5;   // PCB LEDDATA2 (spare)
 #else
 static constexpr int  PIN_LED_DRIVER    = 20;  // GPIO20 → driver-side taillight DIN
 static constexpr int  PIN_LED_PASSENGER = 19;  // GPIO19 → passenger-side taillight DIN

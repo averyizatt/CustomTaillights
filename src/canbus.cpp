@@ -1,49 +1,61 @@
-// ---------------------------------------------------------------------------
-// canbus.cpp
-// MCP2515 SPI CAN bus interface.
-// ---------------------------------------------------------------------------
-
+// MCP2515 CAN service. Runtime SPI work is bounded; never reset or wait for TX
+// completion from the lighting loop.
 #include "canbus.h"
 
 static constexpr uint8_t CMD_SET_BRIGHTNESS = 0x01;
 static constexpr uint8_t CMD_ANIM_OVERRIDE  = 0x02;
 static constexpr uint8_t CMD_CLEAR_OVERRIDE = 0x03;
 static constexpr uint8_t CMD_CUSTOM_ANIM    = 0x04;
-static constexpr unsigned long CAN_RETRY_MS = 1000;
-static constexpr uint8_t CAN_TX_FAILURE_LIMIT = 8;
+static constexpr unsigned long CAN_POLL_MS = 2;
+static constexpr unsigned long CAN_TX_TIMEOUT_MS = 20;
+static constexpr unsigned long CAN_RETRY_MAX_MS = 10000;
+static constexpr uint8_t REG_CANCTRL = 0x0F;
+static constexpr uint8_t REG_TXB0CTRL = 0x30;
+static constexpr uint8_t TXREQ = 0x08;
+static constexpr uint8_t TX_ERRORS = 0x70; // ABTF, MLOA, TXERR
 
-static bool deadlineReached(unsigned long nowMs, unsigned long deadlineMs) {
-    return deadlineMs != 0 && static_cast<int32_t>(nowMs - deadlineMs) >= 0;
+// The library hides register access. These two bounded transactions let us
+// enable one-shot TX and inspect/abort it without polling loops or delays.
+uint8_t CANBus::_readRegister(uint8_t reg) {
+    SPI.beginTransaction(SPISettings(10000000, MSBFIRST, SPI_MODE0));
+    digitalWrite(PIN_CAN_CS, LOW);
+    SPI.transfer(0x03); // READ
+    SPI.transfer(reg);
+    const uint8_t value = SPI.transfer(0);
+    digitalWrite(PIN_CAN_CS, HIGH);
+    SPI.endTransaction();
+    return value;
 }
 
-// ---------------------------------------------------------------------------
+void CANBus::_modifyRegister(uint8_t reg, uint8_t mask, uint8_t value) {
+    SPI.beginTransaction(SPISettings(10000000, MSBFIRST, SPI_MODE0));
+    digitalWrite(PIN_CAN_CS, LOW);
+    SPI.transfer(0x05); // BIT MODIFY
+    SPI.transfer(reg);
+    SPI.transfer(mask);
+    SPI.transfer(value);
+    digitalWrite(PIN_CAN_CS, HIGH);
+    SPI.endTransaction();
+}
+
 bool CANBus::begin() {
-    // Open SPI bus once.  Calling SPI.begin() again on a running bus is
-    // harmless in Arduino but unnecessary and potentially disruptive.
     if (!_spiStarted) {
         SPI.begin(PIN_CAN_SCK, PIN_CAN_MISO, PIN_CAN_MOSI, PIN_CAN_CS);
         _spiStarted = true;
     }
-
     return _initMCP();
 }
 
 bool CANBus::_initMCP() {
-    if (_mcp.reset() != MCP2515::ERROR_OK) {
-        Serial.println(F("[CAN] reset/config readback failed"));
-        _online = false;
-        _busOffRetryMs = millis() + CAN_RETRY_MS;
+    _online = false;
+    _txPending = false;
+    _busOff = false;
+    _txRetryDelayMs = 0;
+    if (_mcp.reset() != MCP2515::ERROR_OK
+        || _mcp.setBitrate(CAN_500KBPS, MCP_8MHZ) != MCP2515::ERROR_OK) {
+        Serial.println(F("[CAN] init failed; CAN disabled until restart"));
         return false;
     }
-
-    if (_mcp.setBitrate(CAN_500KBPS, MCP_8MHZ) != MCP2515::ERROR_OK) {
-        Serial.println(F("[CAN] setBitrate failed — check module / clock"));
-        _online = false;
-        _busOffRetryMs = millis() + CAN_RETRY_MS;
-        return false;
-    }
-
-    // Accept only CAN_ID_COMMAND frames; mask & filter on bits 10:0.
     if (_mcp.setFilterMask(MCP2515::MASK0, false, 0x7FF) != MCP2515::ERROR_OK
         || _mcp.setFilterMask(MCP2515::MASK1, false, 0x7FF) != MCP2515::ERROR_OK
         || _mcp.setFilter(MCP2515::RXF0, false, CAN_ID_COMMAND) != MCP2515::ERROR_OK
@@ -51,78 +63,111 @@ bool CANBus::_initMCP() {
         || _mcp.setFilter(MCP2515::RXF2, false, CAN_ID_COMMAND) != MCP2515::ERROR_OK
         || _mcp.setFilter(MCP2515::RXF3, false, CAN_ID_COMMAND) != MCP2515::ERROR_OK
         || _mcp.setFilter(MCP2515::RXF4, false, CAN_ID_COMMAND) != MCP2515::ERROR_OK
-        || _mcp.setFilter(MCP2515::RXF5, false, CAN_ID_COMMAND) != MCP2515::ERROR_OK) {
-        Serial.println(F("[CAN] command filter configuration failed"));
-        _online = false;
-        _busOffRetryMs = millis() + CAN_RETRY_MS;
+        || _mcp.setFilter(MCP2515::RXF5, false, CAN_ID_COMMAND) != MCP2515::ERROR_OK
+        || _mcp.setNormalMode() != MCP2515::ERROR_OK) {
+        Serial.println(F("[CAN] configuration failed; CAN disabled until restart"));
         return false;
     }
 
-    if (_mcp.setNormalMode() != MCP2515::ERROR_OK) {
-        Serial.println(F("[CAN] setNormalMode failed"));
-        _online = false;
-        _busOffRetryMs = millis() + CAN_RETRY_MS;
+    // CANCTRL.OSM prevents endless automatic retransmission without an ACK.
+    // autowp 1.3.1's setNormalOneShotMode() compares CANSTAT.OPMOD with OSM
+    // and falsely times out, so enable and verify OSM explicitly instead.
+    _modifyRegister(REG_CANCTRL, 0x08, 0x08);
+    if ((_readRegister(REG_CANCTRL) & 0xE8) != 0x08) {
+        Serial.println(F("[CAN] one-shot mode readback failed; CAN disabled"));
         return false;
     }
-
-    _online        = true;
-    _busOffRetryMs = 0;
-    _consecutiveTxFailures = 0;
-    Serial.println(F("[CAN] MCP2515 online — 500 kbit/s"));
+    _online = true;
+    Serial.println(F("[CAN] MCP2515 ready - 500 kbit/s, one-shot TX"));
     return true;
 }
 
-// ---------------------------------------------------------------------------
+void CANBus::_txFailed(unsigned long nowMs) {
+    if (_txRetryDelayMs == 0) {
+        Serial.println(F("[CAN] TX unavailable; backing off (lighting continues)"));
+    }
+    _txRetryDelayMs = _txRetryDelayMs == 0 ? 1000UL
+        : min(_txRetryDelayMs * 2, CAN_RETRY_MAX_MS);
+    _lastTxFailureMs = nowMs;
+    _txPending = false;
+}
+
+void CANBus::_checkTx(unsigned long nowMs) {
+    if (!_txPending) return;
+    const uint8_t ctrl = _readRegister(REG_TXB0CTRL);
+    if (ctrl & TXREQ) {
+        if (nowMs - _txStartedMs < CAN_TX_TIMEOUT_MS) return;
+        _modifyRegister(REG_TXB0CTRL, TXREQ, 0); // abort stuck request
+        _txFailed(nowMs);
+        return;
+    }
+    _txPending = false;
+    if (ctrl & TX_ERRORS) {
+        _txFailed(nowMs);
+    } else {
+        // sendMessage() returning OK only means queued. Success is counted
+        // here, after TXREQ clears and the controller reports no TX errors.
+        if (_txRetryDelayMs) Serial.println(F("[CAN] TX recovered"));
+        _txRetryDelayMs = 0;
+    }
+}
+
+void CANBus::_sendFrame(const struct can_frame& frame) {
+    const unsigned long nowMs = millis();
+    if (!_online || _busOff || _txPending
+        || (_txRetryDelayMs && nowMs - _lastTxFailureMs < _txRetryDelayMs)) return;
+    // Use a single tracked TX slot. Never fill all three buffers with stale
+    // telemetry, and never overwrite a request still being aborted.
+    if (_readRegister(REG_TXB0CTRL) & TXREQ) {
+        _modifyRegister(REG_TXB0CTRL, TXREQ, 0);
+        _txFailed(nowMs);
+        return;
+    }
+    _modifyRegister(REG_TXB0CTRL, TX_ERRORS, 0);
+    if (_mcp.sendMessage(MCP2515::TXB0, &frame) != MCP2515::ERROR_OK) {
+        _modifyRegister(REG_TXB0CTRL, TXREQ, 0);
+        _txFailed(nowMs);
+        return;
+    }
+    _txPending = true;
+    _txStartedMs = nowMs;
+}
+
 void CANBus::tick(LightState driverState, LightState passengerState,
                   const Inputs& inputs, const ThermalManager& thermal,
                   uint8_t appliedBrightness) {
     const unsigned long nowMs = millis();
+    // Failed startup stays quiet. Retrying reset()/setMode() here used to
+    // block the render loop every second when the MCP2515 was unavailable.
+    if (!_online || nowMs - _lastPollMs < CAN_POLL_MS) return;
+    _lastPollMs = nowMs;
 
-    // ── Bus-off detection and recovery ───────────────────────────────────────────
-    // EFLG bit5 = TXBO (transmit bus-off).  This happens when the TX error
-    // counter reaches 256 — usually a wiring fault or missing termination.
-    // Schedule recovery after CAN_RETRY_MS so local lighting keeps running.
-    if (_online) {
-        uint8_t eflg = _mcp.getErrorFlags();
-        if (eflg & 0x20) {   // TXBO — bus-off
-            _online        = false;
-            _busOffRetryMs = millis() + CAN_RETRY_MS;
-            Serial.println(F("[CAN] bus-off detected — retry scheduled"));
-        }
-        if (eflg & 0xC0) {   // RX0OVR / RX1OVR — receive buffer overflow
-            _mcp.clearRXnOVRFlags();
-            Serial.println(F("[CAN] RX overflow cleared"));
-        }
+    const uint8_t eflg = _mcp.getErrorFlags();
+    const bool busOff = (eflg & 0x20) != 0;
+    if (busOff && !_busOff) {
+        _modifyRegister(REG_TXB0CTRL, TXREQ, 0);
+        _txFailed(nowMs);
     }
-    if (!_online) {
-        if (deadlineReached(millis(), _busOffRetryMs)) {
-            Serial.println(F("[CAN] attempting controller recovery ..."));
-            _initMCP();
-        }
-        return;  // skip TX/RX until bus is confirmed back online
-    }
+    // The MCP2515 recovers bus-off automatically after sufficient idle bits.
+    // Leave it in normal mode and poll; do not reset it from the render loop.
+    _busOff = busOff;
+    if (eflg & 0xC0) _mcp.clearRXnOVRFlags();
+    _checkTx(nowMs);
 
-    // ── TX: periodic state broadcast ────────────────────────────────────────
+    // RX stays available during TX backoff. Bound processing to two frames.
+    struct can_frame frame;
+    for (uint8_t i = 0; i < 2 && _mcp.readMessage(&frame) == MCP2515::ERROR_OK; ++i) {
+        _processFrame(frame);
+    }
     if (nowMs - _lastBroadcastMs >= CAN_BROADCAST_INTERVAL_MS) {
         _lastBroadcastMs = nowMs;
         _sendState(driverState, passengerState, inputs, thermal, appliedBrightness);
     }
-
-    // ── RX: drain all pending frames ────────────────────────────────────────
-    struct can_frame frame;
-    uint8_t framesRead = 0;
-    while (framesRead < 8 && _mcp.readMessage(&frame) == MCP2515::ERROR_OK) {
-        _processFrame(frame);
-        ++framesRead;
-    }
-
 }
 
-// ---------------------------------------------------------------------------
 void CANBus::_sendState(LightState driverState, LightState passengerState,
-                        const Inputs& inputs, const ThermalManager& thermal,
-                  uint8_t appliedBrightness) {
-    // Preserve the existing low-four-bit input encoding in byte 2.
+                       const Inputs& inputs, const ThermalManager& thermal,
+                       uint8_t appliedBrightness) {
     const uint8_t inputFlags = inputs.driverSnapshot() & 0x0F;
     const auto state = taillight_can::encodeState(
         static_cast<uint8_t>(driverState), static_cast<uint8_t>(passengerState),
@@ -131,44 +176,21 @@ void CANBus::_sendState(LightState driverState, LightState passengerState,
     frame.can_id = state.id;
     frame.can_dlc = state.dlc;
     for (uint8_t i = 0; i < state.dlc; ++i) frame.data[i] = state.data[i];
-
-    if (_mcp.sendMessage(&frame) != MCP2515::ERROR_OK) {
-        if (_consecutiveTxFailures < 255) ++_consecutiveTxFailures;
-        Serial.println(F("[CAN] TX error"));
-        if (_consecutiveTxFailures >= CAN_TX_FAILURE_LIMIT) {
-            _online = false;
-            _busOffRetryMs = millis() + CAN_RETRY_MS;
-            Serial.println(F("[CAN] repeated TX failures — controller recovery scheduled"));
-        }
-    } else {
-        _consecutiveTxFailures = 0;
-    }
+    _sendFrame(frame);
 }
 
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-void CANBus::reportFault(uint8_t code, uint8_t severity,
-                         uint8_t data0, uint8_t data1) {
-    // Always log to Serial regardless of bus state
-    Serial.printf("[FAULT] code=0x%02X sev=%u d0=%u d1=%u\n",
-                  code, severity, data0, data1);
-
-    if (!_online) return;  // bus offline — can't transmit
-
-    struct can_frame frame;
-    frame.can_id  = CAN_ID_FAULT;
+void CANBus::reportFault(uint8_t code, uint8_t severity, uint8_t data0, uint8_t data1) {
+    Serial.printf("[FAULT] code=0x%02X sev=%u d0=%u d1=%u\n", code, severity, data0, data1);
+    struct can_frame frame = {};
+    frame.can_id = CAN_ID_FAULT;
     frame.can_dlc = 4;
     frame.data[0] = code;
     frame.data[1] = severity;
     frame.data[2] = data0;
     frame.data[3] = data1;
-
-    if (_mcp.sendMessage(&frame) != MCP2515::ERROR_OK) {
-        Serial.println(F("[CAN] fault frame TX error"));
-    }
+    _sendFrame(frame);
 }
 
-// ---------------------------------------------------------------------------
 void CANBus::_processFrame(const struct can_frame& frame) {
     if (frame.can_id != CAN_ID_COMMAND || frame.can_dlc < 1) return;
 

@@ -97,7 +97,16 @@ private:
 
     // Connection management
     bool          _spiStarted    = false;  // SPI.begin() called once; never repeated
-    unsigned long _busOffRetryMs = 0;      // millis() target for next recovery attempt
-    uint8_t       _consecutiveTxFailures = 0;
-    bool _initMCP();                       // (re)configure MCP2515 without re-opening SPI
+    bool _txPending = false;
+    bool _busOff = false;
+    unsigned long _txStartedMs = 0;
+    unsigned long _lastTxFailureMs = 0;
+    unsigned long _txRetryDelayMs = 0;
+    unsigned long _lastPollMs = 0;
+    bool _initMCP(); // Startup only: library reset/mode calls can block.
+    void _sendFrame(const struct can_frame& frame);
+    void _checkTx(unsigned long nowMs);
+    void _txFailed(unsigned long nowMs);
+    uint8_t _readRegister(uint8_t reg);
+    void _modifyRegister(uint8_t reg, uint8_t mask, uint8_t value);
 };

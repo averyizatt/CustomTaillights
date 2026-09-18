@@ -263,8 +263,8 @@ PCB mapping used by this build:
 
 | PCB net | GPIO | Firmware use |
 |---------|------|--------------|
-| LEDDATA1 / LEDDATA2 | 4 / 5 | Driver / passenger taillight |
-| LEDDATA3 | 6 | Spare LED data output (`PIN_LED_AUX`) |
+| LEDDATA1 / LEDDATA3 | 4 / 6 | Driver / passenger taillight |
+| LEDDATA2 | 5 | Spare LED data output (`PIN_LED_AUX`) |
 | OPTOGPIO1 / 2 | 7 / 15 | Shared brake / running input |
 | OPTOGPIO3 / 4 | 16 / 17 | Driver / passenger turn input |
 | OPTOGPIO5 | 18 | Shared reverse input |

@@ -7,7 +7,8 @@
 unsigned long testMillis = 1000;
 Settings g_settings{};
 // Registry dispatch is checked separately; tests call the concrete effects.
-Animation* AnimationRegistry::get(LightState, bool) { return nullptr; }
+static Animation* registryAnimation = nullptr;
+Animation* AnimationRegistry::get(LightState, bool) { return registryAnimation; }
 
 struct Panel {
     CRGB buffer[LEDS_PER_SIDE + 2];
@@ -123,11 +124,34 @@ void preview() {
     }
     std::printf("]\n");
 }
+void test_delayed_frame_transition() {
+    // Simulate HTTP/CAN taking time between the loop timestamp and begin().
+    // The first update must not see an unsigned elapsed-time underflow.
+    struct TimedAnimation : Animation {
+        unsigned long started = 0;
+        unsigned long elapsed = 0;
+        void begin(TailLight&, LightState) override { started = millis(); }
+        void update(TailLight& side, LightState, unsigned long now) override {
+            elapsed = now - started;
+            side.fill(elapsed < 100 ? CRGB(255, 0, 0) : CRGB::Black);
+        }
+    } effect;
+    registryAnimation = &effect;
+    Panel d(true), p(false);
+    testMillis = 1025;
+    d.light.update(LightState::BRAKE, 1000);
+    assert(effect.elapsed == 0 && d.light[0].r == 255);
+    testMillis = 1026;
+    p.light.update(LightState::BRAKE, 1000);
+    assert(effect.elapsed == 0 && p.light[0].r == 255);
+    registryAnimation = nullptr;
+}
 int main(int argc, char** argv) {
     defaults();
     if (argc > 1 && std::strcmp(argv[1], "--preview") == 0) { preview(); return 0; }
     testMillis = 1000;
     test_all_effects();
     test_turn<AnimTurnArrowhead>(); test_turn<AnimTurnThreeBar>();
+    test_delayed_frame_transition();
     std::puts("Matrix animation tests passed");
 }

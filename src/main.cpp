@@ -738,6 +738,8 @@ static void inputTaskFn(void* /*param*/) {
 // ---------------------------------------------------------------------------
 void setup() {
     Serial.begin(115200);
+    Serial.printf("[boot] LED outputs: driver GPIO%d, passenger GPIO%d, spare GPIO%d\n",
+                  PIN_LED_DRIVER, PIN_LED_PASSENGER, PIN_LED_AUX);
     // ── Load persisted settings (NVS) ────────────────────────────────────────────
     // Must be called before any code reads g_settings (brightness, WiFi, etc.).
     settings_load();
@@ -944,6 +946,7 @@ void loop() {
 
     // Process any pending HTTP requests from the web UI.
     wifiServer.handle();
+    nowMs = millis();
 
     // ── Thermal management ──────────────────────────────────────────────────
     thermal.tick(nowMs);
@@ -1121,6 +1124,7 @@ void loop() {
         (g_settings.frame_ms < LED_SHOW_MIN_INTERVAL_MS)
             ? LED_SHOW_MIN_INTERVAL_MS
             : g_settings.frame_ms;
+    nowMs = millis();
     if (nowMs - lastFrameMs >= frameIntervalMs) {
         lastFrameMs = nowMs;
 
