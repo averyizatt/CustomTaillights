@@ -17,9 +17,24 @@ void Inputs::begin() {
     _channels[6].pin = PIN_PASSENGER_TURN;    _channels[6].debounceMs = DEBOUNCE_MS;      _channels[6].state = false; _channels[6].lastRaw = false; _channels[6].lastChangeMs = 0;
     _channels[7].pin = PIN_PASSENGER_REVERSE; _channels[7].debounceMs = DEBOUNCE_FAST_MS; _channels[7].state = false; _channels[7].lastRaw = false; _channels[7].lastChangeMs = 0;
 
+    const uint8_t inputMode = OPT_ACTIVE_LEVEL == LOW ? INPUT_PULLUP : INPUT_PULLDOWN;
     for (auto& ch : _channels) {
-        pinMode(ch.pin, INPUT_PULLDOWN);
+        pinMode(ch.pin, inputMode);
     }
+#if defined(CUSTOM_TAILLIGHTS_PCB)
+    // Read the spare connector for diagnostics only; it selects no light state.
+    pinMode(PIN_OPTO_AUX, inputMode);
+#endif
+}
+
+uint8_t Inputs::rawPcbLevels() const {
+    uint8_t levels = 0;
+#if defined(CUSTOM_TAILLIGHTS_PCB)
+    for (unsigned i = 0; i < 6; ++i) {
+        if (digitalRead(PCB_OPTO_PINS[i]) == HIGH) levels |= (1u << i);
+    }
+#endif
+    return levels;
 }
 
 // IRAM_ATTR keeps this function in Instruction RAM so it executes with

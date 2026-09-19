@@ -51,7 +51,7 @@ The `applySegDiffuser()` helper in `config.h` filters colours automatically so a
 | CAN INT | 16 |
 | Onboard status LED | 48 (S3) / 8 (C3) |
 
-Optocoupler outputs pull their GPIO **HIGH** when the stock 12 V signal is active (`OPT_ACTIVE_LEVEL = HIGH`); all input pins use `INPUT_PULLDOWN`.  
+The custom PCB uses **active-LOW** optocoupler inputs with `INPUT_PULLUP`: HIGH is idle, LOW is active. The original DevKit profile retains active-HIGH inputs with `INPUT_PULLDOWN`.
 All assignments and timing constants are centralised in `src/config.h`.
 
 ---
@@ -113,8 +113,8 @@ BLE is disabled and de-initialized at the start of `setup()` to free heap and re
 
 ### LED timing hardening
 - All LED hardware pushes route through a centralized output helper.
-- Hardware updates are hard-limited to **50 FPS max** (`LED_SHOW_MIN_INTERVAL_MS = 20`).
-- FastLED uses the ESP32 RMTv5 backend (`FASTLED_RMT5=1`) for reliable WS2812 timing under concurrent CAN/WiFi/web activity.
+- Hardware updates are limited to **40 FPS max** (`LED_SHOW_MIN_INTERVAL_MS = 25`), allowing both 380-pixel panels to transmit sequentially.
+- The output adapter uses a shared ESP32-S3 RMT5 DMA channel. Mixing legacy RMT4 with Arduino 3.x's new driver aborts before `setup()`.
 
 ### NVS write minimisation
 Flash is only written when a fault reset (WDT, panic, brownout) occurs — not on every normal power-on. This keeps NVS erase cycles to a minimum over the life of the device.
@@ -248,8 +248,9 @@ pio device monitor         # open serial monitor (115200 baud)
 
 ### Custom PCB build
 
-The original DevKit build remains `esp32-s3`. The separate `esp32-s3-pcb`
-environment selects the custom PCB pinout and enables its onboard MCP2515.
+The default environment is `esp32-s3-pcb`; an unqualified build/upload selects
+the custom PCB pinout and enables its onboard MCP2515. The original DevKit build
+remains available explicitly with `-e esp32-s3`.
 It uses the same 21x5 top strip, 21x5 bottom strip, 17x10 main panel,
 380-LED-per-side buffers, serpentine mapping, mirroring, and animations as the
 original build:
@@ -264,21 +265,77 @@ PCB mapping used by this build:
 | PCB net | GPIO | Firmware use |
 |---------|------|--------------|
 | LEDDATA1 / LEDDATA3 | 4 / 6 | Driver / passenger taillight |
-| LEDDATA2 | 5 | Spare LED data output (`PIN_LED_AUX`) |
-| OPTOGPIO1 / 2 | 7 / 15 | Shared brake / running input |
+| LEDDATA2 | 5 | Spare LED data output (`PIN_LED_AUX`), unused |
+| OPTOGPIO1 / 2 | 7 / 15 | Shared running / brake input |
 | OPTOGPIO3 / 4 | 16 / 17 | Driver / passenger turn input |
 | OPTOGPIO5 | 18 | Shared reverse input |
-| OPTOGPIO6 | 8 | Spare opto input (`PIN_OPTO_AUX`); no lighting function assigned |
+| OPTOGPIO6 | 8 | Spare opto input (`PIN_OPTO_AUX`); diagnostics only |
 | CAN_CS / MISO / MOSI / SCK | 38 / 37 / 40 / 41 | MCP2515 (SO = MISO, SI = MOSI) |
 | CAN_INT | Disconnected | MCP2515 is polled; original GPIO35 trace is isolated |
 | SPARE1 / SPARE2 | 46 / 9 | General-purpose spare I/O |
 
-The spare pins are named but deliberately left unconfigured so attached future
-hardware cannot be driven accidentally. If the PCB connector wiring assigns the
+The temporary driver-to-DATA2 debugging mirror has been removed.
+The spare outputs remain unconfigured. OPTO6 is read with an input pull-up for
+diagnostics but selects no lighting function. If the PCB connector wiring assigns the
 six opto channels differently, only the PCB block in `src/config.h` needs to be
 reordered.
 
-The MCP2515 starts in normal mode at 500 kbit/s with an 8 MHz oscillator.
+FastLED 3.10.3 still supplies colors, brightness, and power limiting. The custom
+output adapter in `src/led_transport.cpp` replaces its asynchronous strip driver.
+It uses ESP32-S3 SPI3 DMA for LED output, separate from CAN's SPI2 peripheral.
+`platformio.ini` pins the tested Arduino 3.3.8 / IDF 5.5.4 toolchain so a fresh
+installation selects the same compatible APIs.
+
+Each complete frame is encoded before transmission, using 100/110 SPI bit
+patterns at 2.5 MHz, as in Espressif's WS2812 SPI driver. The 3612-byte lamp
+packet includes 307.2 us LOW before and after the pixels and fits in one DMA
+descriptor. No interrupt-driven refill is needed during the waveform, unlike
+the previous RMT ping-pong buffer. Only MOSI is routed to the current LED pin;
+no SPI clock or chip-select pin is driven. Transfers finish before switching
+to the next output, and idle outputs are disconnected and driven LOW without
+using the pull-up-enabling GPIO reset function.
+
+Completion waits are bounded to 30 ms. After a timeout, the transaction and
+buffer remain untouched until a nonblocking completion check succeeds; the
+next frame can then resume safely. Initialization failures leave the web UI
+available and are exposed through the per-output error counters.
+
+Legacy RMT remains prohibited. Rendering/transmission share one frame limiter.
+Physical flicker and connector output still need confirmation on the controller;
+successful transfer counters describe driver completion, not measured LED light.
+
+The preview page's Diagnostics now shows each rendered state, non-black buffer
+pixel count, completed transfers, and latest output error. The same data appears
+as `output_*` fields in `GET /api/settings`, including GPIO assignments and
+`output_transport` (`spi3-dma-full-frame`), also shown in Preview Diagnostics
+under LED Transport to identify this firmware. Preview requests blocked by a physical
+brake/reverse signal return HTTP 409 with an explanation instead of reporting
+success. Software input buttons enable input testing and exit show/preview modes;
+held software turn buttons directly request TURN (both together request HAZARD).
+Explicit previews can override software tests, while physical brake/reverse
+protection remains active. Web requests time out after four seconds.
+
+Preview also contains **PCB Input Diagnostics** with raw HIGH/LOW readings for
+OPTO1..OPTO6 (GPIO7, 15, 16, 17, 18, 8). Its six-digit snapshot runs left-to-right
+from OPTO1 to OPTO6, with 1 meaning electrical HIGH, independent of debounce or
+the assumed active polarity. Record all-off, running-only, brake-only, and
+reverse-only snapshots to identify mapping and polarity before changing them.
+The API exposes these as `pcb_input_pins`, `pcb_input_raw_levels`, and
+`input_active_level`. Interpreted input masks now include signal names in the UI.
+The confirmed PCB mapping is running GPIO7, brake GPIO15, driver turn GPIO16,
+passenger turn GPIO17, and reverse GPIO18, all active LOW. With every signal off,
+the raw snapshot should be `111111` and both interpreted masks should be `0x00`.
+This also removes the false brake/reverse condition that blocked Wi-Fi previews;
+an actually active brake or reverse signal still takes priority.
+
+The MCP2515 starts in normal one-shot mode at 500 kbit/s with an 8 MHz oscillator.
+Failed transmissions back off from 1 to 10 seconds, with one log on entering
+backoff and one on recovery. TX completion is checked asynchronously, stalled
+requests are aborted after 20 ms, and receive commands remain available during
+TX backoff. Telemetry and fault frames share this bounded, best-effort path.
+No controller resets or mode-change waits run in the lighting loop. A controller
+that fails initialization stays disabled until restart; an initialized controller
+can resume transmission when the CAN network becomes available without rebooting.
 Normal startup and fault reporting remain available over Serial at 115200 baud.
 Temporary CAN loopback/health diagnostics and optocoupler change logging have
 been removed. OPTO6 remains unassigned. Thermal brightness protection is active:

@@ -123,7 +123,7 @@ void CANBus::_sendFrame(const struct can_frame& frame) {
         _txFailed(nowMs);
         return;
     }
-    _modifyRegister(REG_TXB0CTRL, TX_ERRORS, 0);
+    // Setting TXREQ clears the read-only ABTF/MLOA/TXERR flags automatically.
     if (_mcp.sendMessage(MCP2515::TXB0, &frame) != MCP2515::ERROR_OK) {
         _modifyRegister(REG_TXB0CTRL, TXREQ, 0);
         _txFailed(nowMs);

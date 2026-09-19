@@ -4,5 +4,7 @@
 // - Enforces a minimum interval between hardware show() calls
 // - Provides a clear-and-show helper that still routes through the limiter
 
+// Render scheduling and show() share the same last-transmission timestamp.
+bool ledOutputReady(unsigned long intervalMs);
 void ledOutputShow(bool force = false);
 void ledOutputClear(bool forceShow = true, bool force = false);

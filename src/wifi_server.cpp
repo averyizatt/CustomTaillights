@@ -1,4 +1,4 @@
-﻿// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // wifi_server.cpp
 // WiFi (AP / Station) + synchronous HTTP server.
 // The settings page HTML/CSS/JS is embedded as a raw-string literal so no
@@ -8,6 +8,11 @@
 #include "wifi_server.h"
 #include "settings.h"
 #include "states.h"
+#include "lighting_runtime.h"
+#include "led_transport.h"
+#include "inputs.h"
+
+extern Inputs inputs;
 
 #include <Arduino.h>
 #include <FastLED.h>
@@ -1202,10 +1207,27 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
       <div class="row"><span>Last Preview Action</span><span class="row__value" id="preview-last-action">none</span></div>
       <div class="row"><span>Last Action Age</span><span class="row__value" id="preview-last-age">--</span></div>
       <div class="row"><span>Driver Inputs</span><span class="row__value" id="preview-driver-live">0x00</span></div>
-      <div class="row row--last"><span>Passenger Inputs</span><span class="row__value" id="preview-passenger-live">0x00</span></div>
+      <div class="row"><span>Passenger Inputs</span><span class="row__value" id="preview-passenger-live">0x00</span></div>
+      <div class="row"><span>LED Transport</span><span class="row__value" id="output-transport">--</span></div>
+      <div class="row"><span>Driver Output</span><span class="row__value" id="output-driver">--</span></div>
+      <div class="row"><span>Passenger Output</span><span class="row__value" id="output-passenger">--</span></div>
+      <div class="row"><span>Frames Sent (Driver / Passenger)</span><span class="row__value" id="output-frames">--</span></div>
+      <div class="row row--last"><span>Output Errors (Driver / Passenger)</span><span class="row__value" id="output-errors">--</span></div>
     </div>
   </div>
 
+  <div class="card" id="pcb-input-card" style="display:none">
+    <div class="card-hd"><div>
+      <div class="card-title">PCB Input Diagnostics</div>
+      <div class="card-desc">Raw electrical levels before mapping or debounce. Switch on one vehicle signal at a time.</div>
+    </div></div>
+    <div class="card-body">
+      <div id="pcb-input-rows"></div>
+      <div class="row"><span>OPTO1 through OPTO6</span><span class="row__value" id="pcb-input-bits">------</span></div>
+      <p class="field__hint">1 = HIGH, 0 = LOW. Record this six-digit value with all signals off, then with only running, brake, or reverse on.</p>
+      <p class="field__hint" id="pcb-input-polarity"></p>
+    </div>
+  </div>
 </div><!-- /tab-preview -->
 
 <!-- ── Action bar ─────────────────────────────────────────────────────────── -->
@@ -1219,6 +1241,20 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
 <div class="toast" id="toast"></div>
 
 <script>
+function fetchWithTimeout(url, options) {
+  var controller = new AbortController();
+  var timer = setTimeout(function() { controller.abort(); }, 4000);
+  return fetch(url, Object.assign({}, options || {}, { signal: controller.signal }))
+    .then(function(response) {
+      // Keep the deadline active until the whole response has arrived.
+      return response.clone().text().then(function() { return response; });
+    })
+    .catch(function(e) {
+      if (e.name === 'AbortError') throw new Error('Controller did not respond within 4 seconds');
+      throw e;
+    })
+    .finally(function() { clearTimeout(timer); });
+}
 /* ── Tab navigation ──────────────────────────────────────────────────────── */
 var tabs = document.querySelectorAll('.mode-btn');
 tabs.forEach(function(btn) {
@@ -1279,7 +1315,7 @@ function postDisplaySettings() {
     console.warn('Display auto-save skipped: missing one or more display controls');
     return;
   }
-  fetch('/api/settings', {
+  fetchWithTimeout('/api/settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -1406,7 +1442,7 @@ function selectAnim(n) {
   postShowSettings();
 }
 function postShowSettings() {
-  fetch('/api/settings', {
+  fetchWithTimeout('/api/settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -1420,7 +1456,7 @@ function postShowSettings() {
 
 /* ── Animations tab — live auto-apply ────────────────────────────────────── */
 function postAnimSettings() {
-  fetch('/api/settings', {
+  fetchWithTimeout('/api/settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -1441,7 +1477,7 @@ function triggerRestPulse() {
   }, 120);
 }
 function postRestSettings(withPulse) {
-  fetch('/api/settings', {
+  fetchWithTimeout('/api/settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -1466,12 +1502,13 @@ function setSoftButtonState(name) {
   el.classList.toggle('preview-card--active', !!g_softInputs[name]);
 }
 function toggleSoft(name) {
+  document.getElementById('soft_enable').checked = true;
   g_softInputs[name] = !g_softInputs[name];
   setSoftButtonState(name);
   postSoftInputs();
 }
 function postSoftInputs() {
-  fetch('/api/test_inputs', {
+  fetchWithTimeout('/api/test_inputs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -1501,7 +1538,7 @@ function postSoftInputs() {
 function postPreview(payload) {
   if (g_previewBusy) return Promise.reject(new Error('Preview request in flight'));
   setPreviewBusy(true);
-  return fetch('/api/preview', {
+  return fetchWithTimeout('/api/preview', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
@@ -1540,7 +1577,7 @@ function applyPreviewResponse(resp) {
 }
 
 function postPreviewLockout() {
-  fetch('/api/settings', {
+  fetchWithTimeout('/api/settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ preview_lockout: document.getElementById('preview_lockout').checked ? 1 : 0 })
@@ -1723,13 +1760,37 @@ function fmtUptime(s) {
 function fmtMaskHex(v) {
   return '0x' + ('0' + (v & 0xFF).toString(16)).slice(-2).toUpperCase();
 }
+function describeInputs(mask) {
+  var names = ['Brake', 'Running', 'Turn', 'Reverse'];
+  var active = names.filter(function(_, bit) { return !!(mask & (1 << bit)); });
+  return fmtMaskHex(mask) + ' ' + (active.length ? active.join(', ') : 'None');
+}
+function renderPcbInputs(s) {
+  var pins = s.pcb_input_pins, levels = s.pcb_input_raw_levels;
+  var valid = Array.isArray(pins) && Array.isArray(levels) && pins.length === 6 && levels.length === 6;
+  document.getElementById('pcb-input-card').style.display = valid ? '' : 'none';
+  if (!valid) return;
+  var rows = document.getElementById('pcb-input-rows');
+  rows.textContent = '';
+  levels.forEach(function(level, i) {
+    var row = document.createElement('div'); row.className = 'row';
+    var label = document.createElement('span');
+    label.textContent = 'OPTO' + (i + 1) + ' / GPIO ' + pins[i];
+    var value = document.createElement('span'); value.className = 'row__value';
+    value.textContent = level ? 'HIGH (1)' : 'LOW (0)';
+    row.appendChild(label); row.appendChild(value); rows.appendChild(row);
+  });
+  document.getElementById('pcb-input-bits').textContent = levels.map(function(v) { return v ? '1' : '0'; }).join('');
+  document.getElementById('pcb-input-polarity').textContent =
+    'Current firmware treats ' + (s.input_active_level ? 'HIGH' : 'LOW') + ' as active. Raw readings above do not assume that polarity.';
+}
 
 /* ── Load settings ───────────────────────────────────────────────────────── */
 function loadSettings() {
   if (g_loadInFlight || g_saveInFlight || document.hidden) return;
   g_loadInFlight = true;
   setSyncStatus('Syncing\u2026');
-  fetch('/api/settings')
+  fetchWithTimeout('/api/settings')
     .then(function(r) { return r.json(); })
     .then(function(s) {
       setSlider('brightness',     s.brightness);
@@ -1786,8 +1847,14 @@ function loadSettings() {
       }
       var liveDm = (+s.live_driver_mask) || 0;
       var livePm = (+s.live_passenger_mask) || 0;
-      document.getElementById('preview-driver-live').textContent = fmtMaskHex(liveDm);
-      document.getElementById('preview-passenger-live').textContent = fmtMaskHex(livePm);
+      document.getElementById('preview-driver-live').textContent = describeInputs(liveDm);
+      document.getElementById('preview-passenger-live').textContent = describeInputs(livePm);
+      renderPcbInputs(s);
+      document.getElementById('output-transport').textContent = s.output_transport || '--';
+      document.getElementById('output-driver').textContent = (s.output_driver_state || '--') + ' / ' + (s.output_driver_lit || 0) + ' pixels';
+      document.getElementById('output-passenger').textContent = (s.output_passenger_state || '--') + ' / ' + (s.output_passenger_lit || 0) + ' pixels';
+      document.getElementById('output-frames').textContent = (s.output_driver_frames || 0) + ' / ' + (s.output_passenger_frames || 0);
+      document.getElementById('output-errors').textContent = (s.output_driver_error || 0) + ' / ' + (s.output_passenger_error || 0);
       if (s.preview_hard_override) {
         updatePreviewWarning('Safety override: physical brake/reverse is active and preview cannot suppress it.');
       } else {
@@ -1866,7 +1933,7 @@ function saveSettings() {
   var saved = false;
   g_saveInFlight = true;
   btn.textContent = 'Saving\u2026';
-  fetch('/api/settings', {
+  fetchWithTimeout('/api/settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(collectSettings())
@@ -1889,7 +1956,7 @@ function saveSettings() {
 /* ── Reset defaults ──────────────────────────────────────────────────────── */
 function resetDefaults() {
   if (!confirm('Reset all settings to factory defaults?')) return;
-  fetch('/api/reset', { method: 'POST' })
+  fetchWithTimeout('/api/reset', { method: 'POST' })
     .then(function(r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       toast('Reset to defaults \u2713', 'ok');
@@ -1901,7 +1968,7 @@ function resetDefaults() {
 /* ── Reboot ──────────────────────────────────────────────────────────────── */
 function rebootDevice() {
   if (!confirm('Reboot the device now?')) return;
-  fetch('/api/reboot', { method: 'POST' })
+  fetchWithTimeout('/api/reboot', { method: 'POST' })
     .then(function() { toast('Rebooting\u2026'); })
     .catch(function() { toast('Rebooting\u2026'); });
 }
@@ -2048,6 +2115,33 @@ static void handleGetSettings() {
     doc["soft_passenger_mask"] = g_soft_passenger_mask;
     doc["live_driver_mask"]    = g_live_driver_inputs;
     doc["live_passenger_mask"] = g_live_passenger_inputs;
+#if defined(CUSTOM_TAILLIGHTS_PCB)
+    const uint8_t rawLevels = inputs.rawPcbLevels();
+    JsonArray inputPins = doc["pcb_input_pins"].to<JsonArray>();
+    JsonArray inputLevels = doc["pcb_input_raw_levels"].to<JsonArray>();
+    for (unsigned i = 0; i < 6; ++i) {
+        inputPins.add(PCB_OPTO_PINS[i]);
+        inputLevels.add((rawLevels >> i) & 1);
+    }
+    doc["input_active_level"] = OPT_ACTIVE_LEVEL;
+#endif
+    doc["output_driver_state"] = lightStateName(g_lighting.driver);
+    doc["output_passenger_state"] = lightStateName(g_lighting.passenger);
+    doc["output_driver_lit"] = g_lighting.driverLit;
+    doc["output_passenger_lit"] = g_lighting.passengerLit;
+    doc["output_frames"] = g_lighting.frames;
+    doc["output_frame_age_ms"] = millis() - g_lighting.lastFrameMs;
+    doc["output_transport"] = ledTransportName();
+    const auto& driverOutput = ledTransportStatus(0);
+    const auto& passengerOutput = ledTransportStatus(1);
+    doc["output_driver_gpio"] = driverOutput.pin;
+    doc["output_passenger_gpio"] = passengerOutput.pin;
+    doc["output_driver_frames"] = driverOutput.completed;
+    doc["output_passenger_frames"] = passengerOutput.completed;
+    doc["output_driver_failures"] = driverOutput.failures;
+    doc["output_passenger_failures"] = passengerOutput.failures;
+    doc["output_driver_error"] = driverOutput.lastError;
+    doc["output_passenger_error"] = passengerOutput.lastError;
 
     const unsigned long nowMs = millis();
     const bool previewActive = nowMs < g_preview_until_ms;
@@ -2266,8 +2360,6 @@ static void handlePreview() {
         resp["ok"] = true;
         resp["action"] = "stop";
         resp["preview_active"] = 0;
-        resp["applied_driver"] = "off";
-        resp["applied_passenger"] = "off";
         String out;
         serializeJson(resp, out);
         addCorsHeaders();
@@ -2277,6 +2369,11 @@ static void handlePreview() {
 
     if (lockoutActive) {
         sendJsonError(423, "lockout_active", "Preview lockout is active while live driving signals are present");
+        return;
+    }
+
+    if (physicalPreviewBlocked(dIn, pIn)) {
+        sendJsonError(409, "physical_signal_active", "Physical brake or reverse is active; preview was not started");
         return;
     }
 
@@ -2332,8 +2429,8 @@ static void handlePreview() {
     JsonDocument resp;
     resp["ok"] = true;
     resp["requested_state"] = s;
-    resp["applied_driver"] = lightStateName(ld);
-    resp["applied_passenger"] = lightStateName(lp);
+    resp["requested_driver"] = lightStateName(ld);
+    resp["requested_passenger"] = lightStateName(lp);
     resp["side"] = side;
     resp["duration_ms"] = durationMs;
     resp["preview_until_ms"] = g_preview_until_ms;
@@ -2380,6 +2477,13 @@ static void handleTestInputs() {
 
     if (doc["enabled"].is<bool>() || doc["enabled"].is<int>()) {
         g_soft_inputs_enabled = asBool(doc["enabled"]) ? 1 : 0;
+    }
+
+    if (g_soft_inputs_enabled) {
+        // Selecting input testing takes control from show/preview modes.
+        g_settings.show_mode = 0;
+        g_preview_until_ms = 0;
+        g_rest_pulse_until_ms = 0;
     }
 
     if (doc["driver"].is<JsonObjectConst>()) {

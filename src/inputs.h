@@ -17,6 +17,10 @@ public:
     // Call every loop iteration.  Returns true when any input changed.
     bool update();
 
+    // Raw electrical levels in physical OPTO1..OPTO6 order, before polarity
+    // interpretation or debounce. Bit 0 is OPTO1; HIGH sets the bit.
+    uint8_t rawPcbLevels() const;
+
     // ── Atomic packed snapshots (safe to read from a different RTOS task) ───
     // Bit layout per byte:  bit0=brake  bit1=running  bit2=turn  bit3=reverse
     // Written as a single atomic byte store at the end of every update().

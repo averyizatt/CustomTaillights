@@ -88,8 +88,7 @@ inline CRGB applySegDiffuser(int seg, CRGB c) {
 }
 #endif
 
-// Data pins for each side. The PCB also routes a third, currently unused LED
-// data output so it can be assigned to a future strip without a board change.
+// Data pins for each side and the spare PCB output.
 #if defined(CUSTOM_TAILLIGHTS_PCB)
 static constexpr int  PIN_LED_DRIVER    = 4;   // PCB LEDDATA1
 static constexpr int  PIN_LED_PASSENGER = 6;   // PCB LEDDATA3
@@ -129,9 +128,8 @@ static constexpr uint32_t LED_POWER_BUDGET_MA = 12000;    // mA  (12.0 A soft ca
 #define LED_CHIPSET     WS2812B
 
 // ── Optocoupler inputs ───────────────────────────────────────────────────────
-// Two 4-channel optocouplers, one per side.
-// Each coupler output drives its GPIO HIGH when the stock bulb supply is ON.
-// All GPIOs are configured INPUT_PULLDOWN so lines are LOW (inactive) at rest.
+// Custom PCB: six active-LOW optocouplers, with INPUT_PULLUP at rest.
+// Original DevKit: two active-HIGH four-channel modules, INPUT_PULLDOWN.
 //
 // Signal → opto channel mapping (same on both sides):
 //   O1 → Brake
@@ -145,11 +143,13 @@ static constexpr uint32_t LED_POWER_BUDGET_MA = 12000;    // mA  (12.0 A soft ca
 //   O3 → turn         → GPIO 4
 //   O4 → running/park → GPIO 6
 #if defined(CUSTOM_TAILLIGHTS_PCB)
+// Physical connector order for diagnostics, independent of signal assignment.
+static constexpr int PCB_OPTO_PINS[6] = {7, 15, 16, 17, 18, 8};
 // The PCB exposes six optocoupler outputs. Brake, running and reverse are
 // vehicle-wide signals, so each shared input is intentionally used by both
 // side state machines. OPTGPIO6 remains available for future use.
-static constexpr int PIN_DRIVER_BRAKE   =  7;  // PCB OPTOGPIO1
-static constexpr int PIN_DRIVER_RUNNING = 15;  // PCB OPTOGPIO2
+static constexpr int PIN_DRIVER_BRAKE   = 15;  // PCB OPTOGPIO2
+static constexpr int PIN_DRIVER_RUNNING =  7;  // PCB OPTOGPIO1
 static constexpr int PIN_DRIVER_TURN    = 16;  // PCB OPTOGPIO3
 static constexpr int PIN_DRIVER_REVERSE = 18;  // PCB OPTOGPIO5
 #else
@@ -166,8 +166,8 @@ static constexpr int PIN_DRIVER_REVERSE =  7;
 //   O3 → turn         → GPIO 3
 //   O4 → running/park → GPIO 9
 #if defined(CUSTOM_TAILLIGHTS_PCB)
-static constexpr int PIN_PASSENGER_BRAKE   =  7;  // shared OPTOGPIO1
-static constexpr int PIN_PASSENGER_RUNNING = 15;  // shared OPTOGPIO2
+static constexpr int PIN_PASSENGER_BRAKE   = 15;  // shared OPTOGPIO2
+static constexpr int PIN_PASSENGER_RUNNING =  7;  // shared OPTOGPIO1
 static constexpr int PIN_PASSENGER_TURN    = 17;  // PCB OPTOGPIO4
 static constexpr int PIN_PASSENGER_REVERSE = 18;  // shared OPTOGPIO5
 static constexpr int PIN_OPTO_AUX           =  8;  // PCB OPTOGPIO6 (spare input)
@@ -184,12 +184,18 @@ static constexpr int PIN_SPARE_2            = -1;
 #endif
 
 // Logic level when the stock signal is ACTIVE.
-// The optocoupler output drives the GPIO HIGH when the stock bulb circuit is
-// energised. INPUT_PULLDOWN keeps lines LOW at rest (inactive).
+// Input pulls in Inputs::begin() must bias the pin to the opposite (idle) level.
 #ifndef HIGH
 static constexpr int HIGH = 1;
 #endif
+#ifndef LOW
+static constexpr int LOW = 0;
+#endif
+#if defined(CUSTOM_TAILLIGHTS_PCB)
+static constexpr int OPT_ACTIVE_LEVEL = LOW;
+#else
 static constexpr int OPT_ACTIVE_LEVEL = HIGH;
+#endif
 
 // Debounce time in milliseconds
 static constexpr unsigned long DEBOUNCE_MS      = 20;  // turn
@@ -282,8 +288,8 @@ static constexpr unsigned long REST_PULSE_HALF_CYCLE_MS = 300;
 // ── Animation timing ─────────────────────────────────────────────────────────
 // How often the main loop calls the active animation's update() method.
 static constexpr unsigned long FRAME_INTERVAL_MS = 16;   // ~60 fps
-// Hard cap for hardware LED pushes so show() never exceeds 50 FPS.
-static constexpr unsigned long LED_SHOW_MIN_INTERVAL_MS = 20;  // 1000/50
+// Allow two sequential 380-pixel transmissions plus reset intervals.
+static constexpr unsigned long LED_SHOW_MIN_INTERVAL_MS = 25;  // 1000/40
 
 // Turn-signal blink period (total on+off cycle), milliseconds
 static constexpr unsigned long TURN_BLINK_PERIOD_MS = 600;

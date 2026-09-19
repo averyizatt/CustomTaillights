@@ -51,8 +51,8 @@ public:
         return _brightness.requested(fallback);
     }
 
-    // True if begin() succeeded and the MCP2515 is online
-    bool isOnline() const { return _online; }
+    // Controller initialized and not bus-off; does not imply a peer ACK.
+    bool isOnline() const { return _online && !_busOff; }
 
     // ── Custom animation (Cmd 0x04) ───────────────────────────────────────────
     // True after a Cmd 0x04 is received and while the animation is running.
@@ -63,7 +63,7 @@ public:
 
     // ── Fault reporting ──────────────────────────────────────────────────────
     // Broadcast a CAN_ID_FAULT frame (0x102) with a FAULT_* code.
-    // Silently dropped if the bus is offline — callers do not need to check.
+    // Best effort: dropped while offline, backing off, or a TX is pending.
     //   code     : FAULT_* constant from faults.h
     //   severity : FAULT_SEV_INFO / WARNING / CRITICAL
     //   data0/1  : fault-specific payload bytes (0 if unused)

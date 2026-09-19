@@ -46,6 +46,8 @@
 #include "settings.h"
 #include "wifi_server.h"
 #include "led_output.h"
+#include "led_transport.h"
+#include "lighting_runtime.h"
 
 // Preview state set by POST /api/preview in wifi_server.cpp.
 // Applied in loop() to let the web UI trigger live light previews.
@@ -62,6 +64,7 @@ extern volatile uint8_t       g_live_passenger_inputs;
 // ── Pixel buffers (owned by main, shared with TailLight objects) ─────────────
 CRGB ledsDriver   [LEDS_PER_SIDE];   // driver side   (US left)
 CRGB ledsPassenger[LEDS_PER_SIDE];   // passenger side (US right)
+LightingRuntime g_lighting;
 
 // ── Subsystem objects ────────────────────────────────────────────────────────
 Inputs    inputs;
@@ -72,7 +75,6 @@ ThermalManager thermal;
 StatusLed      statusLed;
 
 // ── Timing ───────────────────────────────────────────────────────────────────
-static unsigned long lastFrameMs = 0;
 static TurnBlinkDetector driverTurnBlink;
 static TurnBlinkDetector passengerTurnBlink;
 
@@ -214,7 +216,8 @@ static void st_printConfig() {
     Serial.print(F(" rows = "));            Serial.print(MAIN_LEDS);  Serial.println(F(" px"));
     Serial.print(F("  Frame rate     : ~"));
     Serial.print(1000UL / FRAME_INTERVAL_MS); Serial.println(F(" fps"));
-    Serial.println(F("  --- Inputs (active-HIGH via optocouplers) ---"));
+    Serial.printf("  --- Inputs (active-%s via optocouplers) ---\n",
+                  OPT_ACTIVE_LEVEL == LOW ? "LOW" : "HIGH");
     Serial.println(F("  Left opto:"));
     Serial.print(F("    Brake        : GPIO")); Serial.println(PIN_DRIVER_BRAKE);
     Serial.print(F("    Running      : GPIO")); Serial.println(PIN_DRIVER_RUNNING);
@@ -753,13 +756,7 @@ void setup() {
     esp_register_shutdown_handler(onSystemShutdown);
 
     // Register LED panels with FastLED
-    FastLED.addLeds<LED_CHIPSET, PIN_LED_DRIVER,  LED_COLOR_ORDER>(ledsDriver,  LEDS_PER_SIDE);
-    FastLED.addLeds<LED_CHIPSET, PIN_LED_PASSENGER, LED_COLOR_ORDER>(ledsPassenger, LEDS_PER_SIDE);
-    // Register the onboard status LED on its own controller with a fixed scale
-    // so it is never dimmed by the global taillight brightness / thermal derating.
-    {
-        FastLED.addLeds<WS2812B, PIN_STATUS_LED, GRB>(&statusLed.pixel, 1);
-    }
+    ledTransportBegin(ledsDriver, ledsPassenger, &statusLed.pixel);
     // Per-side brightness trims are intentionally equal by default. FastLED
     // 3.10 removed the old per-controller setScale() API, so side matching is
     // enforced by shared state/colour rendering rather than controller scale.
@@ -996,11 +993,11 @@ void loop() {
 
     const bool driverBrake = ds & 0x01;
     const bool driverRunning = ds & 0x02;
-    const bool driverTurn = ds & 0x04;
+    const bool driverTurn = g_live_driver_inputs & 0x04;
     const bool driverReverse = ds & 0x08;
     const bool passengerBrake = ps & 0x01;
     const bool passengerRunning = ps & 0x02;
-    const bool passengerTurn = ps & 0x04;
+    const bool passengerTurn = g_live_passenger_inputs & 0x04;
     const bool passengerReverse = ps & 0x08;
 
     // Brake, running, and reverse are vehicle-level steady signals. If either
@@ -1015,14 +1012,18 @@ void loop() {
     // HAZARD until timing-valid edges are observed.
     const TurnBlinkSnapshot driverBlink = driverTurnBlink.update(driverTurn, nowMs);
     const TurnBlinkSnapshot passengerBlink = passengerTurnBlink.update(passengerTurn, nowMs);
-    const bool hazardBlinking = validHazardBlink(driverBlink, passengerBlink);
+    const bool driverTurnRequested = requestedTurn(driverBlink.blinking, g_soft_inputs_enabled, g_soft_driver_mask);
+    const bool passengerTurnRequested = requestedTurn(passengerBlink.blinking, g_soft_inputs_enabled, g_soft_passenger_mask);
+    const bool softwareHazard = g_soft_inputs_enabled
+                               && (g_soft_driver_mask & g_soft_passenger_mask & 0x04);
+    const bool hazardBlinking = validHazardBlink(driverBlink, passengerBlink) || softwareHazard;
 
     LightState driverState = resolveSideState(
-        brakeActive, runningActive, driverBlink.blinking, reverseActive,
+        brakeActive, runningActive, driverTurnRequested, reverseActive,
         hazardBlinking
     );
     LightState passengerState = resolveSideState(
-        brakeActive, runningActive, passengerBlink.blinking, reverseActive,
+        brakeActive, runningActive, passengerTurnRequested, reverseActive,
         hazardBlinking
     );
 
@@ -1082,9 +1083,10 @@ void loop() {
     // colors and animations from the web UI.  Applied after show mode so the
     // preview controls always respond.
     // Safety: brake and reverse physical signals are never suppressed.
-    if (nowMs < g_preview_until_ms) {
-        if (!brakeActive && !reverseActive) driverState    = g_preview_driver;
-        if (!brakeActive && !reverseActive) passengerState = g_preview_passenger;
+    const bool previewBlocked = physicalPreviewBlocked(g_live_driver_inputs, g_live_passenger_inputs);
+    if (nowMs < g_preview_until_ms && !previewBlocked) {
+        driverState = g_preview_driver;
+        passengerState = g_preview_passenger;
     }
 
     // Optional rest-mode test pulse from the web UI (brief RUNNING/OFF pulse).
@@ -1092,8 +1094,7 @@ void loop() {
         const LightState pulseState = ((nowMs / REST_PULSE_HALF_CYCLE_MS) & 1UL)
                                       ? LightState::RUNNING
                                       : LightState::OFF;
-        if (!brakeActive && !reverseActive) driverState    = pulseState;
-        if (!brakeActive && !reverseActive) passengerState = pulseState;
+        if (!previewBlocked) driverState = passengerState = pulseState;
     }
 
     // Broadcast the effective states and thermally limited brightness used below.
@@ -1119,20 +1120,29 @@ void loop() {
         statusLed.setState(desired);
     }
 
-    // Throttle animation updates to settings frame time, but never above 50 FPS.
+    // Shared DMA sends both 380-pixel lamps sequentially; cap at 40 FPS.
     const unsigned long frameIntervalMs =
         (g_settings.frame_ms < LED_SHOW_MIN_INTERVAL_MS)
             ? LED_SHOW_MIN_INTERVAL_MS
             : g_settings.frame_ms;
-    nowMs = millis();
-    if (nowMs - lastFrameMs >= frameIntervalMs) {
-        lastFrameMs = nowMs;
+    if (ledOutputReady(frameIntervalMs)) {
+        nowMs = millis();
 
         driverPanel.update(driverState, nowMs);
         passengerPanel.update(passengerState, nowMs);
 
+        g_lighting.driver = driverState;
+        g_lighting.passenger = passengerState;
+        g_lighting.driverLit = g_lighting.passengerLit = 0;
+        for (int i = 0; i < LEDS_PER_SIDE; ++i) {
+            if (ledsDriver[i].r || ledsDriver[i].g || ledsDriver[i].b) ++g_lighting.driverLit;
+            if (ledsPassenger[i].r || ledsPassenger[i].g || ledsPassenger[i].b) ++g_lighting.passengerLit;
+        }
+
         // Tick the status LED and push all controllers together in one show()
         statusLed.tick(nowMs);
         ledOutputShow();
+        ++g_lighting.frames;
+        g_lighting.lastFrameMs = millis();
     }
 }
