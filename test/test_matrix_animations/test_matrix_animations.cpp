@@ -1,4 +1,5 @@
 #include <cassert>
+#include <initializer_list>
 #include <cstdio>
 #include <cstring>
 #include "taillight.h"
@@ -39,6 +40,7 @@ void mirrored(Panel& d, Panel& p) {
     }
 }
 void defaults() {
+    g_settings.brake_speed = g_settings.reverse_speed = g_settings.run_speed = 100;
     g_settings.brake_r = 255;
     g_settings.turn_r = 255; g_settings.turn_g = 110;
     g_settings.run_r = 255; g_settings.brightness_dim = 25;
@@ -146,12 +148,67 @@ void test_delayed_frame_transition() {
     assert(effect.elapsed == 0 && p.light[0].r == 255);
     registryAnimation = nullptr;
 }
+void test_speed_controls() {
+    assert(animationTime(0xffffffffUL, 200) == 8589934590ULL);
+    Panel normal(true), fast(true), slow(true);
+    AnimRunContour contour;
+    g_settings.run_speed = 100;
+    contour.update(normal.light, LightState::RUNNING, 1200);
+    g_settings.run_speed = 200;
+    contour.update(fast.light, LightState::RUNNING, 600);
+    g_settings.run_speed = 50;
+    contour.update(slow.light, LightState::RUNNING, 2400);
+    for (int i = 0; i < LEDS_PER_SIDE; ++i) {
+        assert(normal.light[i] == fast.light[i]);
+        assert(normal.light[i] == slow.light[i]);
+    }
+    AnimBrakeEdgeLock brake;
+    testMillis = 1000;
+    brake.begin(normal.light, LightState::BRAKE);
+    g_settings.brake_speed = 100;
+    brake.update(normal.light, LightState::BRAKE, 1090);
+    g_settings.brake_speed = 200;
+    brake.update(fast.light, LightState::BRAKE, 1045);
+    g_settings.brake_speed = 50;
+    brake.update(slow.light, LightState::BRAKE, 1180);
+    for (int i = 0; i < LEDS_PER_SIDE; ++i) {
+        assert(normal.light[i] == fast.light[i]);
+        assert(normal.light[i] == slow.light[i]);
+        assert(slow.light[i].r >= 192);
+    }
+    defaults();
+}
+template<class Effect> void test_custom_turn() {
+    Effect effect;
+    Panel panel(true);
+    g_settings.turn_custom = 1;
+    g_settings.turn_sweep_ms = 100;
+    g_settings.turn_hold_ms = 200;
+    g_settings.turn_off_ms = 400;
+    testMillis = 1000;
+    effect.begin(panel.light, LightState::BRAKE_TURN);
+    for (unsigned long time : {1100UL, 1299UL}) {
+        effect.update(panel.light, LightState::BRAKE_TURN, time);
+        for (int i = 0; i < STRIP_LEDS; ++i) assert(panel.light[i] == CRGB(255, 110, 0));
+        for (int i = STRIP_LEDS; i < LEDS_PER_SIDE; ++i) assert(panel.light[i] == CRGB(255, 0, 0));
+    }
+    for (unsigned long time : {1300UL, 1699UL}) {
+        effect.update(panel.light, LightState::BRAKE_TURN, time);
+        for (int i = 0; i < STRIP_LEDS; ++i) assert(panel.light[i] == CRGB::Black);
+        for (int i = STRIP_LEDS; i < LEDS_PER_SIDE; ++i) assert(panel.light[i] == CRGB(255, 0, 0));
+    }
+    effect.update(panel.light, LightState::BRAKE_TURN, 1700);
+    assert(panel.light[index(SEG_TOP_STRIP, 2, STRIP_COLS - 1)].r > 0);
+    g_settings.turn_custom = 0;
+}
 int main(int argc, char** argv) {
     defaults();
     if (argc > 1 && std::strcmp(argv[1], "--preview") == 0) { preview(); return 0; }
     testMillis = 1000;
+    test_speed_controls();
     test_all_effects();
     test_turn<AnimTurnArrowhead>(); test_turn<AnimTurnThreeBar>();
+    test_custom_turn<AnimTurnArrowhead>(); test_custom_turn<AnimTurnThreeBar>();
     test_delayed_frame_transition();
     std::puts("Matrix animation tests passed");
 }

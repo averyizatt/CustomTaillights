@@ -388,3 +388,117 @@ Native geometry and rendering tests plus an exporter for a standalone animated
 preview are documented in `test/test_matrix_animations/README.md`. The preview
 is generated from the actual C++ effects and pixel mapping, with schematic lens
 colors rather than a physical optical simulation.
+
+### WiFi tuning and profiles
+
+- **Apply** uses the current form immediately without writing startup settings.
+- **Save** applies the form and remembers it across power cycles.
+- **Revert** restores the last saved settings and exits show mode.
+- Editing controls alone does not apply or save lighting changes. Diagnostics
+  continue refreshing while edits stay in the form.
+
+The Display tab has six named profile slots stored on the controller, available
+from any connected phone. **Save Profile** captures the lighting values in the
+form, including edits you have not applied. **Load** applies the selected profile
+temporarily; use the bottom **Save** button to make it the startup configuration.
+Profiles include colors, brightness, animation styles/speeds, turn timing, rest
+mode, and show effect/text choices. They exclude WiFi credentials, lens layout,
+startup animation, show-mode activation, and preview/software input overrides.
+Saving or deleting a profile does not change the active lights. Reset Settings
+restores saved defaults without deleting profiles.
+
+Colors provides independent brake, turn/hazard, reverse, and running colors.
+Red diffuser sections still filter out green and blue. Animations provides
+independent brake, reverse, and running speeds from 50% to 200%; solid styles
+remain steady and brake pulse speed is independent of show speed.
+
+Turn timing offers:
+
+- **Simple:** the existing 200-1500 ms blink period with equal on/off halves.
+- **Custom:** separate Sweep (50-1500 ms), Full-light hold (0-1500 ms), and Off
+  (50-1500 ms) controls. The page shows their total cycle time. Chase styles
+  animate during Sweep and fill the turn area during Hold. Simple Flash and
+  Hazards stay on for Sweep + Hold. A zero hold skips that phase.
+
+Existing installations default to Simple, preserving their saved blink period.
+These controls do not change physical input mapping or debounce. Frame Interval
+still controls output smoothness (20 ms = 50 fps).
+
+API: `POST /api/settings` applies supplied fields temporarily by default;
+include `"persist": true` to save. `GET /api/settings` includes `settings_pending`.
+`POST /api/revert` restores the last successful Save. `GET /api/profiles` lists
+six slots; `POST /api/profiles` accepts `action` (`save`, `load`, `delete`) and
+`slot` (0-5). Saving also requires a `name` (1-24 UTF-8 bytes) and complete
+`settings` matching the lighting fields in `src/lighting_config.h`. Failed
+storage writes return an error instead of reporting success.
+
+### Firmware updates over WiFi (OTA)
+
+First install this firmware once by USB using the **esp32-s3-pcb** environment.
+It adds both a browser updater and PlatformIO OTA. The existing 8 MB partition
+layout already has two 0x330000-byte application slots; no partition migration
+or settings/profile erase is needed. Keep the vehicle parked with all physical
+light inputs idle and power connected. Light output pauses during the upload.
+Updates abort if a physical light input becomes active during transfer.
+
+**From the web app:**
+
+1. Build `esp32-s3-pcb` in PlatformIO.
+2. Connect to the controller and open **Network > Firmware Updates** in a normal
+   browser. If the captive-portal window cannot select files, open the controller
+   IP directly in Chrome/Safari/Edge.
+3. Select `.pio/build/esp32-s3-pcb/firmware.bin`, enter the controller's **AP WiFi
+   password**, and press **Upload & Restart**. Do not select `firmware.factory.bin`,
+   `bootloader.bin`, or `partitions.bin`.
+4. Wait for the page to confirm the controller is back online. If WiFi disconnects
+   during restart, reconnect to the controller network. Uploading 100% only means
+   the file was sent; success is confirmed separately after validation/restart.
+
+The AP password is the one loaded at startup, including when the controller is
+on a home network. After changing it, Save and reboot before using the new
+password for updates. Both firmware update methods use this password. Firmware
+updates preserve saved settings and profiles; temporary Apply changes are lost
+on restart.
+
+**From VS Code / PlatformIO:**
+
+- Keep **esp32-s3-pcb** for USB uploads.
+- Select **esp32-s3-pcb-ota > General > Upload** for WiFi uploads. It defaults to
+  `192.168.4.1` on the controller AP. The uploader prompts for the AP password
+  when its terminal supports interactive input.
+- Alternatively, in a PlatformIO terminal, supply the password to that process
+  and run the upload there:
+
+```powershell
+$env:FOXBODY_OTA_PASSWORD = 'your-controller-ap-password'
+pio run -e esp32-s3-pcb-ota -t upload
+```
+
+For a controller on home WiFi, use its displayed IP:
+
+```powershell
+pio run -e esp32-s3-pcb-ota -t upload --upload-port 192.168.1.123
+```
+
+A variable set inside a terminal is available to commands launched from that
+terminal; an already-running VS Code task does not automatically inherit it.
+The upload helper uses the `espota.py` bundled with the pinned Arduino framework
+so its authentication matches the firmware, and passes passwords directly as
+arguments without printing them or interpreting shell characters. Allow the
+Python uploader through the Windows firewall on your private network if its
+return connection is blocked. Neither OTA method needs internet access once the
+firmware and development dependencies are available locally.
+
+The updater accepts only complete ESP32-S3 application images carrying this
+project's matching PCB/development target marker. The ESP32 updater additionally
+validates image integrity before selecting the new boot slot. Interrupted or
+rejected transfers do not activate the incomplete image. An application that
+passes validation can still have software bugs; automatic rollback after a bad
+boot is not configured. USB remains the recovery path if the app cannot start
+WiFi. Older builds without the OTA target marker must be installed over USB.
+
+Read-only `GET /api/firmware` reports the build, target, boot ID, inactive-slot
+capacity, input state, and last update error. Browser upload is authenticated
+`POST /api/firmware` with one multipart field named `firmware` and an exact
+`X-Firmware-Size` header; the Basic authentication username is `admin`. These
+routes are implemented separately from settings/profile persistence.

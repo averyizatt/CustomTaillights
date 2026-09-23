@@ -1,6 +1,7 @@
 #include "animations.h"
 #include "taillight.h"
 #include "settings.h"
+#include "turn_timing.h"
 
 namespace {
 int rows(int seg) { return seg == SEG_MAIN ? MAIN_ROWS : STRIP_ROWS; }
@@ -18,11 +19,10 @@ CRGB runColour() {
 }
 CRGB brakeColour() { return CRGB(g_settings.brake_r, g_settings.brake_g, g_settings.brake_b); }
 CRGB turnColour() { return CRGB(g_settings.turn_r, g_settings.turn_g, g_settings.turn_b); }
-unsigned long turnPeriod() { return constrain(g_settings.turn_blink_ms, 200, 1500); }
 unsigned long showPeriod(unsigned long base) {
     return base * 100UL / constrain(g_settings.show_speed, 50, 200);
 }
-int phase256(unsigned long now, unsigned long period) {
+int phase256(uint64_t now, unsigned long period) {
     return static_cast<int>((now % period) * 256UL / period);
 }
 int edgeDistance(int r, int c, int h, int w) {
@@ -44,10 +44,11 @@ void turnBase(TailLight& side, LightState state) {
 
 // A stable outline on each segment with a slow highlight along its perimeter.
 void AnimRunContour::update(TailLight& side, LightState, unsigned long nowMs) {
+    const uint64_t visualMs = animationTime(nowMs, g_settings.run_speed);
     const CRGB colour = runColour();
     for (int seg = 0; seg < NUM_SEGMENTS; ++seg) {
         const int h = rows(seg), w = cols(seg), perimeter = 2 * (w + h) - 4;
-        const int head = static_cast<int>((nowMs % 4800UL) * perimeter / 4800UL);
+        const int head = static_cast<int>((visualMs % 4800UL) * perimeter / 4800UL);
         for (int r = 0; r < h; ++r) for (int c = 0; c < w; ++c) {
             unsigned level = 35;
             if (edgeDistance(r, c, h, w) == 0) {
@@ -63,8 +64,9 @@ void AnimRunContour::update(TailLight& side, LightState, unsigned long nowMs) {
 
 // Three raked blades on the main panel, with matching fine rails on the strips.
 void AnimRunLouvers::update(TailLight& side, LightState, unsigned long nowMs) {
+    const uint64_t visualMs = animationTime(nowMs, g_settings.run_speed);
     const CRGB colour = runColour();
-    const int sheen = phase256(nowMs, 5600UL);
+    const int sheen = phase256(visualMs, 5600UL);
     for (int seg = 0; seg < NUM_SEGMENTS; ++seg) {
         const int h = rows(seg), w = cols(seg);
         for (int r = 0; r < h; ++r) for (int c = 0; c < w; ++c) {
@@ -79,7 +81,7 @@ void AnimRunLouvers::update(TailLight& side, LightState, unsigned long nowMs) {
 
 void AnimBrakeEdgeLock::begin(TailLight&, LightState) { _startMs = millis(); }
 void AnimBrakeEdgeLock::update(TailLight& side, LightState, unsigned long nowMs) {
-    const unsigned long elapsed = nowMs - _startMs;
+    const uint64_t elapsed = animationTime(nowMs - _startMs, g_settings.brake_speed);
     const CRGB colour = brakeColour();
     for (int seg = 0; seg < NUM_SEGMENTS; ++seg) {
         const int h = rows(seg), w = cols(seg);
@@ -94,8 +96,15 @@ void AnimBrakeEdgeLock::update(TailLight& side, LightState, unsigned long nowMs)
 void AnimTurnArrowhead::begin(TailLight&, LightState) { _startMs = millis(); }
 void AnimTurnArrowhead::update(TailLight& side, LightState state, unsigned long nowMs) {
     turnBase(side, state);
-    const unsigned long half = turnPeriod() / 2, phase = (nowMs - _startMs) % turnPeriod();
-    if (phase >= half) return;
+    const TurnTiming timing = turnTiming(g_settings);
+    const unsigned long half = timing.sweep, phase = (nowMs - _startMs) % timing.period();
+    if (phase >= timing.on()) return;
+    if (phase >= timing.sweep) {
+        for (int seg = 0; seg < NUM_SEGMENTS; ++seg)
+            if (state != LightState::BRAKE_TURN || seg == SEG_TOP_STRIP)
+                side.fillSegment(seg, turnColour());
+        return;
+    }
     const int front = static_cast<int>(phase * 400UL / half);
     for (int seg = 0; seg < NUM_SEGMENTS; ++seg) {
         if (state == LightState::BRAKE_TURN && seg != SEG_TOP_STRIP) continue;
@@ -112,8 +121,15 @@ void AnimTurnArrowhead::update(TailLight& side, LightState state, unsigned long 
 void AnimTurnThreeBar::begin(TailLight&, LightState) { _startMs = millis(); }
 void AnimTurnThreeBar::update(TailLight& side, LightState state, unsigned long nowMs) {
     turnBase(side, state);
-    const unsigned long half = turnPeriod() / 2, phase = (nowMs - _startMs) % turnPeriod();
-    if (phase >= half) return;
+    const TurnTiming timing = turnTiming(g_settings);
+    const unsigned long half = timing.sweep, phase = (nowMs - _startMs) % timing.period();
+    if (phase >= timing.on()) return;
+    if (phase >= timing.sweep) {
+        for (int seg = 0; seg < NUM_SEGMENTS; ++seg)
+            if (state != LightState::BRAKE_TURN || seg == SEG_TOP_STRIP)
+                side.fillSegment(seg, turnColour());
+        return;
+    }
     const int stage = smaller(2, static_cast<int>(phase * 4UL / half));
     for (int seg = 0; seg < NUM_SEGMENTS; ++seg) {
         if (state == LightState::BRAKE_TURN && seg != SEG_TOP_STRIP) continue;

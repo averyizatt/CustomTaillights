@@ -45,6 +45,7 @@
 #include "status_led.h"
 #include "settings.h"
 #include "wifi_server.h"
+#include "firmware_update.h"
 #include "led_output.h"
 #include "led_transport.h"
 #include "lighting_runtime.h"
@@ -943,6 +944,7 @@ void loop() {
 
     // Process any pending HTTP requests from the web UI.
     wifiServer.handle();
+    if (firmwareUpdateBusy()) { delay(1); return; }
     nowMs = millis();
 
     // ── Thermal management ──────────────────────────────────────────────────

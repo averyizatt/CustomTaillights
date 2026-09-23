@@ -28,6 +28,9 @@ struct Settings {
 
     // ── Animation timing ──────────────────────────────────────────────────────
     uint16_t turn_blink_ms;    // full on+off blink cycle period (200–1500 ms)
+    uint8_t turn_custom;       // 0 = legacy equal on/off, 1 = custom phases
+    uint16_t turn_sweep_ms, turn_hold_ms, turn_off_ms;
+    uint8_t brake_speed, reverse_speed, run_speed; // 50-200%, default 100
     uint8_t  frame_ms;         // animation frame interval (10–100 ms)
 
     // ── Colors ────────────────────────────────────────────────────────────────
@@ -71,7 +74,15 @@ extern Settings g_settings;
 void settings_load();
 
 // Persist the current g_settings to NVS.
-void settings_save();
+bool settings_save();
+void settings_revert();
+bool settings_pending();
 
 // Reset g_settings to compiled-in defaults (does NOT automatically persist).
 void settings_reset();
+
+// Visual time only; input processing and output transport keep real time.
+inline uint64_t animationTime(unsigned long ms, uint8_t speed) {
+    const unsigned percent = speed < 50 ? 50 : (speed > 200 ? 200 : speed);
+    return static_cast<uint64_t>(ms) * percent / 100u;
+}
