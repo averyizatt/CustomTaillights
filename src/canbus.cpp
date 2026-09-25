@@ -4,11 +4,12 @@
 // ---------------------------------------------------------------------------
 
 #include "canbus.h"
+#include "can_control.h"
 
-static constexpr uint8_t CMD_SET_BRIGHTNESS = 0x01;
-static constexpr uint8_t CMD_ANIM_OVERRIDE  = 0x02;
-static constexpr uint8_t CMD_CLEAR_OVERRIDE = 0x03;
-static constexpr uint8_t CMD_CUSTOM_ANIM    = 0x04;
+static constexpr uint8_t CMD_SET_BRIGHTNESS = can_protocol::taillight_command::SET_BRIGHTNESS;
+static constexpr uint8_t CMD_ANIM_OVERRIDE  = can_protocol::taillight_command::SET_OVERRIDE;
+static constexpr uint8_t CMD_CLEAR_OVERRIDE = can_protocol::taillight_command::CLEAR_OVERRIDE;
+static constexpr uint8_t CMD_CUSTOM_ANIM    = can_protocol::taillight_command::TRIGGER_CUSTOM_ANIMATION;
 static constexpr unsigned long CAN_RETRY_MS = 1000;
 static constexpr uint8_t CAN_TX_FAILURE_LIMIT = 8;
 
@@ -65,6 +66,14 @@ bool CANBus::_initMCP() {
 // ---------------------------------------------------------------------------
 void CANBus::tick(LightState driverState, LightState passengerState,
                   const Inputs& inputs, const ThermalManager& thermal) {
+    if (_demoMode && millis() - _lastDemoStepMs >= 5000UL) {
+        _lastDemoStepMs = millis();
+        g_settings.show_anim = (g_settings.show_anim + 1U) % can_protocol::TAILLIGHT_SHOW_COUNT;
+    }
+    if (_hasCustomAnim && deadlineReached(millis(), _customAnimUntilMs)) {
+        clearCustomAnim();
+        AnimationRegistry::setCustomSlot(AnimationRegistry::CustomSlot::NONE);
+    }
     // ── Bus-off detection and recovery ───────────────────────────────────────────
     // EFLG bit5 = TXBO (transmit bus-off).  This happens when the TX error
     // counter reaches 256 — usually a wiring fault or missing termination.
@@ -108,31 +117,33 @@ void CANBus::tick(LightState driverState, LightState passengerState,
 // ---------------------------------------------------------------------------
 void CANBus::_sendState(LightState driverState, LightState passengerState,
                         const Inputs& inputs, const ThermalManager& thermal) {
-    struct can_frame frame;
-    frame.can_id  = CAN_ID_STATE_BROADCAST;
-    frame.can_dlc = 7;
-
-    frame.data[0] = static_cast<uint8_t>(driverState);
-    frame.data[1] = static_cast<uint8_t>(passengerState);
+    can_protocol::TaillightState state{};
+    state.left_state = static_cast<uint8_t>(driverState);
+    state.right_state = static_cast<uint8_t>(passengerState);
 
     // Driver raw flags
-    frame.data[2] = (inputs.driverBrake()      ? 0x01 : 0)
+    state.driver_input_flags = (inputs.driverBrake()      ? 0x01 : 0)
                   | (inputs.driverRunning()    ? 0x02 : 0)
                   | (inputs.driverTurn()       ? 0x04 : 0)
                   | (inputs.driverReverse()    ? 0x08 : 0);
 
     // Passenger raw flags
-    frame.data[3] = (inputs.passengerBrake()   ? 0x01 : 0)
+    state.passenger_input_flags = (inputs.passengerBrake()   ? 0x01 : 0)
                   | (inputs.passengerRunning() ? 0x02 : 0)
                   | (inputs.passengerTurn()    ? 0x04 : 0)
                   | (inputs.passengerReverse() ? 0x08 : 0);
 
-    frame.data[4] = _brightness;
+    state.brightness = FastLED.getBrightness();
     // Byte 5: die temperature in °C, clamped to 0-255
     int tempRounded = static_cast<int>(thermal.tempC() + 0.5f);
-    frame.data[5]   = static_cast<uint8_t>(tempRounded < 0 ? 0 : (tempRounded > 255 ? 255 : tempRounded));
+    state.die_temp_c = can_protocol::clampU8(tempRounded);
     // Byte 6: thermal derate amount (0=none, 255=maximum)
-    frame.data[6]   = thermal.derateAmount();
+    state.thermal_derate = thermal.derateAmount();
+    const auto packed = can_protocol::packTaillightState(state);
+    struct can_frame frame{};
+    frame.can_id = packed.id;
+    frame.can_dlc = packed.dlc;
+    for (uint8_t i = 0; i < packed.dlc; ++i) frame.data[i] = packed.data[i];
 
     if (_mcp.sendMessage(&frame) != MCP2515::ERROR_OK) {
         if (_consecutiveTxFailures < 255) ++_consecutiveTxFailures;
@@ -172,9 +183,23 @@ void CANBus::reportFault(uint8_t code, uint8_t severity,
 
 // ---------------------------------------------------------------------------
 void CANBus::_processFrame(const struct can_frame& frame) {
-    if (frame.can_id != CAN_ID_COMMAND || frame.can_dlc < 1) return;
+    if (frame.can_id != CAN_ID_COMMAND || frame.can_dlc < 1 || frame.can_dlc > 8) return;
 
     switch (frame.data[0]) {
+
+        case can_protocol::taillight_command::SET_MODE: {
+            can_protocol::CanFrame command{};
+            command.id = frame.can_id;
+            command.dlc = frame.can_dlc;
+            for (uint8_t i = 0; i < frame.can_dlc && i < 8; ++i) command.data[i] = frame.data[i];
+            if (!applyCanMode(g_settings, command)) break;
+            _hasOverride = false;
+            _hasCustomAnim = false;
+            AnimationRegistry::setCustomSlot(AnimationRegistry::CustomSlot::NONE);
+            _demoMode = frame.data[1] == can_protocol::taillight_mode::DEMO;
+            _lastDemoStepMs = millis();
+            break;
+        }
 
         case CMD_SET_BRIGHTNESS:
             if (frame.can_dlc >= 2) {
@@ -204,6 +229,10 @@ void CANBus::_processFrame(const struct can_frame& frame) {
 
         case CMD_CLEAR_OVERRIDE:
             _hasOverride = false;
+            _hasCustomAnim = false;
+            _demoMode = false;
+            g_settings.show_mode = 0;
+            AnimationRegistry::setCustomSlot(AnimationRegistry::CustomSlot::NONE);
             Serial.println(F("[CAN] override cleared"));
             break;
 
@@ -216,6 +245,8 @@ void CANBus::_processFrame(const struct can_frame& frame) {
                 uint16_t durMs    = ((uint16_t)frame.data[2] << 8) | frame.data[3];
                 uint8_t  param0   = frame.data[4];
                 uint8_t  param1   = frame.data[5];
+                // Duration limits runtime; scrolling uses a fixed column speed.
+                _customAnimUntilMs = durMs ? millis() + durMs : 0;
 
                 Serial.printf("[CAN] custom anim id=0x%02X dur=%u p0=%u p1=%u\n",
                               animId, durMs, param0, param1);
@@ -227,7 +258,7 @@ void CANBus::_processFrame(const struct can_frame& frame) {
                             "BRAKE CHECK",
                             CRGB(220, 220, 220),
                             CRGB(30, 0, 0),
-                            (durMs > 0) ? (int)durMs : 45);
+                            45);
                         AnimationRegistry::setCustomSlot(
                             AnimationRegistry::CustomSlot::SCROLL_TEXT);
                         _hasCustomAnim = true;
@@ -250,7 +281,7 @@ void CANBus::_processFrame(const struct can_frame& frame) {
                             buf,
                             CRGB(220, 220, 220),
                             CRGB(30, 0, 0),
-                            (durMs > 0) ? (int)durMs : 45);
+                            45);
                         AnimationRegistry::setCustomSlot(
                             AnimationRegistry::CustomSlot::SCROLL_TEXT);
                         _hasCustomAnim = true;

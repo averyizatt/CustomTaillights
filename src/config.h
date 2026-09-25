@@ -8,6 +8,7 @@
 // ---------------------------------------------------------------------------
 
 #include <stdint.h>
+#include "../../../shared/can_contract/include/can_contract/can_protocol.h"
 
 // ── LED segments ─────────────────────────────────────────────────────────────
 //
@@ -184,10 +185,11 @@ static constexpr int   TEMP_DERATE_END_C       =   80;  // max derating applied 
 static constexpr int   TEMP_SHUTDOWN_C         =   85;  // above this: BRIGHTNESS_MIN_SAFETY
 
 // ── MCP2515 CAN bus (SPI) ────────────────────────────────────────────────────
-// Disabled by default so the taillight controller still boots and renders
-// signals on the bench if the MCP2515 module is missing, unpowered, or wired
-// differently. Set true only after CAN hardware is installed and verified.
-static constexpr bool CAN_ENABLED = false;
+// Integrated build enables CAN; standalone bench builds may override this.
+#ifndef CCM_TAILLIGHT_CAN_ENABLED
+#define CCM_TAILLIGHT_CAN_ENABLED 1
+#endif
+static constexpr bool CAN_ENABLED = CCM_TAILLIGHT_CAN_ENABLED != 0;
 
 // The common blue MCP2515 breakout connects to a custom SPI bus so it does
 // not conflict with any other peripheral.
@@ -215,9 +217,9 @@ static constexpr int PIN_CAN_INT  = 16;
 //  0x100  (TX) — periodic taillight state broadcast (every 100 ms)
 //  0x101  (RX) — command frame addressed to this ECU
 //  0x102  (TX) — diagnostic fault broadcast (on-demand, not periodic)
-static constexpr uint32_t CAN_ID_STATE_BROADCAST = 0x100;
-static constexpr uint32_t CAN_ID_COMMAND         = 0x101;
-static constexpr uint32_t CAN_ID_FAULT           = 0x102;
+static constexpr uint32_t CAN_ID_STATE_BROADCAST = can_protocol::ID_TAILLIGHT_STATE;
+static constexpr uint32_t CAN_ID_COMMAND         = can_protocol::ID_TAILLIGHT_COMMAND;
+static constexpr uint32_t CAN_ID_FAULT           = can_protocol::ID_TAILLIGHT_FAULT;
 
 // How often (ms) the taillight state is broadcast on the bus
 static constexpr unsigned long CAN_BROADCAST_INTERVAL_MS = 100;

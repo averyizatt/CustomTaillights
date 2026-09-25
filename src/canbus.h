@@ -72,7 +72,7 @@ public:
     // main.cpp checks this to push LightState::CUSTOM into both sides.
     // Call clearCustomAnim() when both sides' isDone() flags are set.
     bool hasCustomAnim()     const { return _hasCustomAnim; }
-    void clearCustomAnim()         { _hasCustomAnim = false; }
+    void clearCustomAnim()         { _hasCustomAnim = false; _customAnimUntilMs = 0; }
 
     // ── Fault reporting ──────────────────────────────────────────────────────
     // Broadcast a CAN_ID_FAULT frame (0x102) with a FAULT_* code.
@@ -103,6 +103,9 @@ private:
 
     // Custom animation state
     bool _hasCustomAnim = false;
+    unsigned long _customAnimUntilMs = 0;
+    bool _demoMode = false;
+    unsigned long _lastDemoStepMs = 0;
 
     // Brightness
     bool    _brightnessChanged = false;

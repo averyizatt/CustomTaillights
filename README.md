@@ -249,3 +249,11 @@ pio device monitor         # open serial monitor (115200 baud)
 ### Bench self-test mode
 
 Hold the **driver-side running/park** optocoupler input active while applying power. The controller will run a full segment ID flash, pixel chaser, and RGB colour verify (~5 s), followed by a full light-state cycle. Release the line to resume normal operation. This mode is intentionally skipped on every normal in-car boot so brake lights are live as quickly as possible.
+
+## Integrated CAN schema 2
+
+CAN is enabled in the integrated build. The actual firmware consumes the shared
+contract and accepts command `0x05` for stock/sequential/show/demo and all 33
+show options. Update this firmware, the main controller, and the Nano together.
+See [CAN compatibility audit](../../docs/CAN_COMPATIBILITY_AUDIT.md) for wire
+formats, changes, and hardware validation.

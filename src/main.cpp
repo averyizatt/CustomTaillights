@@ -974,6 +974,7 @@ void loop() {
     // Always pass through thermal derating — it is never bypassed, even
     // by a CAN command, so safety-critical lights always remain visible.
     const bool canBrightnessChanged = CAN_ENABLED && canBus.brightnessChanged();
+    if (canBrightnessChanged) g_settings.brightness = canBus.brightness();
     uint8_t targetBrightness = canBrightnessChanged
                              ? canBus.brightness()
                              : g_settings.brightness;
@@ -1089,11 +1090,6 @@ void loop() {
         }
     }
 
-    // ── CAN bus tick (TX broadcast + RX command processing) ─────────────────
-    if (CAN_ENABLED) {
-        canBus.tick(driverState, passengerState, inputs, thermal);
-    }
-
     // ── State override priority (highest → lowest) ───────────────────────────
     //  1. Custom animation (Cmd 0x04) — plays to completion, then auto-clears
     //  2. Animation override (Cmd 0x02) — holds until Cmd 0x03
@@ -1156,6 +1152,10 @@ void loop() {
         if (!brakeActive && !reverseActive) driverState    = pulseState;
         if (!brakeActive && !reverseActive) passengerState = pulseState;
     }
+
+    // Broadcast the resolved output states, including remote overrides.
+    // Received commands take effect on the next loop iteration.
+    if (CAN_ENABLED) canBus.tick(driverState, passengerState, inputs, thermal);
 
     // ── Status LED ──────────────────────────────────────────────────────────
     // Compute desired state from current system health (highest priority wins).

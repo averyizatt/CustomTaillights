@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "../../../shared/can_contract/include/can_contract/can_protocol.h"
 
 // ===========================================================================
 // can_protocol.h  —  Foxbody Taillight Controller CAN Bus Protocol Reference
@@ -100,6 +101,10 @@
 //    0x07  FAULT_BROWNOUT_RESET    data0 = accumulated count
 //
 // ===========================================================================
+// Cmd 0x05: mode selection, DLC 3: [05 mode option].
+// Mode 0=stock, 1=sequential, 2=show, 3=demo; option 0..32.
+// Modes change live settings only; physical brake/reverse retain priority.
+// Cmd 0x03 also stops custom/show/demo output.
 // Custom Animation IDs  (Byte 1 of Cmd 0x04)
 // ===========================================================================
 
