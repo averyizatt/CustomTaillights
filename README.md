@@ -248,9 +248,9 @@ pio device monitor         # open serial monitor (115200 baud)
 
 ### Custom PCB build
 
-The default environment is `esp32-s3-pcb`; an unqualified build/upload selects
-the custom PCB pinout and enables its onboard MCP2515. The original DevKit build
-remains available explicitly with `-e esp32-s3`.
+The only main environment is `esp32-s3-pcb`; an unqualified build/upload selects
+the custom PCB pinout and enables its onboard MCP2515. Host tests use the
+separate `platformio-tests.ini` configuration.
 It uses the same 21x5 top strip, 21x5 bottom strip, 17x10 main panel,
 380-LED-per-side buffers, serpentine mapping, mirroring, and animations as the
 original build:
@@ -467,22 +467,20 @@ on restart.
 
 **From VS Code / PlatformIO:**
 
-- Keep **esp32-s3-pcb** for USB uploads.
-- Select **esp32-s3-pcb-ota > General > Upload** for WiFi uploads. It defaults to
-  `192.168.4.1` on the controller AP. The uploader prompts for the AP password
-  when its terminal supports interactive input.
-- Alternatively, in a PlatformIO terminal, supply the password to that process
-  and run the upload there:
+Use the main **esp32-s3-pcb > Upload** task for USB uploads.
+For WiFi, use the separate `platformio-ota.ini` configuration from a terminal.
+It defaults to `192.168.4.1` and prompts for the AP password when interactive
+input is available. Alternatively, supply the password to that process:
 
 ```powershell
 $env:FOXBODY_OTA_PASSWORD = 'your-controller-ap-password'
-pio run -e esp32-s3-pcb-ota -t upload
+pio run -c platformio-ota.ini -e esp32-s3-pcb-ota -t upload
 ```
 
 For a controller on home WiFi, use its displayed IP:
 
 ```powershell
-pio run -e esp32-s3-pcb-ota -t upload --upload-port 192.168.1.123
+pio run -c platformio-ota.ini -e esp32-s3-pcb-ota -t upload --upload-port 192.168.1.123
 ```
 
 A variable set inside a terminal is available to commands launched from that
