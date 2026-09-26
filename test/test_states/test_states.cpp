@@ -1,4 +1,5 @@
 #include <assert.h>
+#include "config.h"  // compiles the shared matrix-size invariants
 #include "states.h"
 
 static TurnBlinkSnapshot blinkAfterTwoEdges() {

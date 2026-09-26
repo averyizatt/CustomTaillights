@@ -1,4 +1,4 @@
-﻿// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // wifi_server.cpp
 // WiFi (AP / Station) + synchronous HTTP server.
 // The settings page HTML/CSS/JS is embedded as a raw-string literal so no
@@ -6,8 +6,16 @@
 // ---------------------------------------------------------------------------
 
 #include "wifi_server.h"
+#include "firmware_update.h"
 #include "settings.h"
+#include "profiles.h"
+#include "lighting_config.h"
 #include "states.h"
+#include "lighting_runtime.h"
+#include "led_transport.h"
+#include "inputs.h"
+
+extern Inputs inputs;
 
 #include <Arduino.h>
 #include <FastLED.h>
@@ -46,7 +54,7 @@ static const char INDEX_HTML[] PROGMEM = R"rawhtml(<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Foxbody Taillights</title>
 <style>
 /* ── Variables ──────────────────────────────────────────────────────────── */
@@ -478,6 +486,8 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
   letter-spacing: -.2px;
 }
 .btn:active         { opacity: .7; transform: scale(.97); }
+.btn:disabled { opacity: .45; cursor: wait; }
+.profile-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .btn--primary       { background: var(--accent); color: #fff; }
 .btn--secondary     { background: var(--surf2); color: var(--text); border: 1px solid var(--border); }
 .btn--ghost         { background: transparent; color: var(--text3); border: 1px solid var(--border); }
@@ -552,6 +562,22 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
 
 <!-- ── Display tab ────────────────────────────────────────────────────────── -->
 <div id="tab-display" class="page">
+
+  <p class="group-label">Saved Lighting Profiles</p>
+  <div class="card"><div class="card-body">
+    <p class="field__hint">Six profiles stored on the controller. Save Profile captures the lighting settings in this form. Load applies them temporarily; the bottom Save button makes them your startup settings. WiFi, lens layout, and test inputs are excluded.</p>
+    <div class="field"><label class="field__label" for="profile-slot">Profile slot</label>
+      <select class="select" id="profile-slot" onchange="selectProfileSlot()"><option>Loading profiles...</option></select></div>
+    <div class="field"><label class="field__label" for="profile-name">Profile name</label>
+      <input class="txt-input" id="profile-name" maxlength="24" placeholder="Evening cruise"></div>
+    <div class="profile-actions">
+      <button class="btn btn--secondary settings-action" onclick="profileAction('save')">Save Profile</button>
+      <button class="btn btn--secondary settings-action" onclick="profileAction('load')">Load</button>
+      <button class="btn btn--ghost settings-action" onclick="profileAction('delete')">Delete</button>
+    </div>
+    <p class="field__hint" id="profile-status" role="status">Connecting...</p>
+  </div></div>
+
 
   <p class="group-label">Brightness</p>
   <div class="card">
@@ -645,6 +671,14 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
     </div>
   </div>
 
+  <div class="card"><div class="card-body">
+    <div class="card-title">Controller</div>
+    <div class="profile-actions">
+      <button class="btn btn--ghost settings-action" onclick="resetDefaults()">Reset Settings</button>
+      <button class="btn btn--secondary settings-action" onclick="rebootDevice()">Reboot</button>
+    </div>
+    <p class="field__hint">Apply tries changes until power-off. Save keeps them. Revert restores your last Save. Reset keeps your named profiles.</p>
+  </div></div>
 </div><!-- /tab-display -->
 
 <!-- ── Colors tab ─────────────────────────────────────────────────────────── -->
@@ -656,7 +690,7 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
       <div class="card-icon card-icon--amber"></div>
       <div>
         <div class="card-title">Per-State Colors</div>
-        <div class="card-desc">Color override for each light function</div>
+        <div class="card-desc">Apply to try colors now; Save to remember them after power-off</div>
       </div>
     </div>
     <div class="card-body">
@@ -665,10 +699,10 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
         <div class="color-item__hd">
           <div>
             <div class="color-item__name">Brake</div>
-            <div class="color-item__hint">Solid brake-light color</div>
+            <div class="color-item__hint">Color for every brake animation</div>
           </div>
           <div class="color-item__controls">
-            <input type="color" id="brake_color" value="#ff0000">
+            <input type="color" aria-label="Brake color" id="brake_color" value="#ff0000">
             <input type="text" class="hex-input" id="brake_hex" value="#ff0000" maxlength="7" spellcheck="false">
           </div>
         </div>
@@ -681,7 +715,7 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
             <div class="color-item__hint">Sequential sweep &amp; hazard flash</div>
           </div>
           <div class="color-item__controls">
-            <input type="color" id="turn_color" value="#ff6400">
+            <input type="color" aria-label="Turn signal color" id="turn_color" value="#ff6400">
             <input type="text" class="hex-input" id="turn_hex" value="#ff6400" maxlength="7" spellcheck="false">
           </div>
         </div>
@@ -694,7 +728,7 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
             <div class="color-item__hint">Backup-light color</div>
           </div>
           <div class="color-item__controls">
-            <input type="color" id="reverse_color" value="#ffffff">
+            <input type="color" aria-label="Reverse color" id="reverse_color" value="#ffffff">
             <input type="text" class="hex-input" id="reverse_hex" value="#ffffff" maxlength="7" spellcheck="false">
           </div>
         </div>
@@ -707,7 +741,7 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
             <div class="color-item__hint">Dim glow color when parked</div>
           </div>
           <div class="color-item__controls">
-            <input type="color" id="run_color" value="#1e0000">
+            <input type="color" aria-label="Running light color" id="run_color" value="#1e0000">
             <input type="text" class="hex-input" id="run_hex" value="#1e0000" maxlength="7" spellcheck="false">
           </div>
         </div>
@@ -758,6 +792,7 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
           <option value="3">Strobe Flash &mdash; rapid 8 Hz attention strobe</option>
           <option value="4">Outer-In Fill &mdash; sweeps from edges to center then holds</option>
           <option value="5">Heartbeat &mdash; lub-dub double-pulse pattern</option>
+          <option value="6">Edge Lock &mdash; instant bright brake, border locks to solid</option>
         </select>
       </div>
       <div class="field">
@@ -769,6 +804,8 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
           <option value="3">Bounce Sweep &mdash; Knight Rider beam bounces across</option>
           <option value="4">Split Out &mdash; dual sweep races from center to edges</option>
           <option value="5">Fast Chase &mdash; rapid triple-flash per blink</option>
+          <option value="6">Arrowhead Sweep &mdash; outward chevron fill, then hold</option>
+          <option value="7">Three-Bar Relay &mdash; three outward bars, then hold</option>
         </select>
       </div>
       <div class="field">
@@ -787,6 +824,8 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
           <option value="1">Breathe &mdash; slow pulse dim glow</option>
           <option value="2">Shimmer &mdash; subtle per-pixel brightness variation</option>
           <option value="3">Slow Comet &mdash; very dim wandering comet</option>
+          <option value="4">Contour Glide &mdash; outlined panels with a slow highlight</option>
+          <option value="5">Fox Louvers &mdash; three raked blades with a soft sheen</option>
         </select>
       </div>
     </div>
@@ -798,14 +837,28 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
       <div class="card-icon card-icon--amber"></div>
       <div>
         <div class="card-title">Animation Timing</div>
-        <div class="card-desc">Blink speed &amp; frame rate</div>
+        <div class="card-desc">Apply to try timing. 100% = original speed; solids stay steady</div>
       </div>
     </div>
     <div class="card-body">
+      <div class="field">
+        <label class="field__label" for="turn_custom">Turn timing</label>
+        <select class="select" id="turn_custom" onchange="updateTurnTiming()">
+          <option value="0">Simple - equal on / off</option>
+          <option value="1">Custom - sweep / hold / off</option>
+        </select>
+      </div>
+      <div id="custom-turn-fields" hidden>
+<label class="field__label" for="turn_sweep_ms">Sweep</label><div class="slider-row"><input type="range" id="turn_sweep_ms" min="50" max="1500" step="10" value="300"><span class="slider-val" id="turn_sweep_ms-v">300 ms</span></div>
+<label class="field__label" for="turn_hold_ms">Full-light hold</label><div class="slider-row"><input type="range" id="turn_hold_ms" min="0" max="1500" step="10" value="0"><span class="slider-val" id="turn_hold_ms-v">0 ms</span></div>
+<label class="field__label" for="turn_off_ms">Off interval</label><div class="slider-row"><input type="range" id="turn_off_ms" min="50" max="1500" step="10" value="300"><span class="slider-val" id="turn_off_ms-v">300 ms</span></div>
+      </div>
+      <p class="field__hint" id="turn-timing-summary" aria-live="polite"></p>
+      <p class="field__hint">Custom timing: animate during Sweep, illuminate the full turn area during Hold, then go dark during Off. Simple Flash and Hazards stay on for Sweep + Hold.</p>
       <div class="row">
         <div class="row__label">
-          <span>Turn Blink Period</span>
-          <small>Full on+off cycle time</small>
+          <span>Turn / Hazard Period</span>
+          <small>Turn and hazard on+off cycle; lower is faster</small>
         </div>
       </div>
       <div class="slider-row">
@@ -813,10 +866,16 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
         <span class="slider-val" id="turn_blink_ms-v">600 ms</span>
       </div>
       <div class="divider"></div>
+<div class="row"><label class="row__label" for="brake_speed"><span>Brake Speed</span><small>50% slower / 100% normal / 200% faster; solid stays steady</small></label></div>
+<div class="slider-row"><input type="range" id="brake_speed" min="50" max="200" step="5" value="100"><span class="slider-val" id="brake_speed-v">100%</span></div>
+<div class="row"><label class="row__label" for="reverse_speed"><span>Reverse Speed</span><small>50% slower / 100% normal / 200% faster; solid stays steady</small></label></div>
+<div class="slider-row"><input type="range" id="reverse_speed" min="50" max="200" step="5" value="100"><span class="slider-val" id="reverse_speed-v">100%</span></div>
+<div class="row"><label class="row__label" for="run_speed"><span>Running Light Speed</span><small>50% slower / 100% normal / 200% faster; solid stays steady</small></label></div>
+<div class="slider-row"><input type="range" id="run_speed" min="50" max="200" step="5" value="100"><span class="slider-val" id="run_speed-v">100%</span></div>
       <div class="row row--last">
         <div class="row__label">
           <span>Frame Interval</span>
-          <small>Animation update rate (~60 fps default)</small>
+          <small>Output smoothness (20 ms = 50 fps); separate from effect speed</small>
         </div>
       </div>
       <div class="slider-row">
@@ -886,6 +945,25 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
       <div class="row row--last"><span>Uptime</span><span class="row__value" id="info-uptime">&ndash;</span></div>
     </div>
   </div>
+
+
+  <p class="group-label">Firmware Updates</p>
+  <div class="card" id="firmware-card"><div class="card-body">
+    <div class="card-title">Update over WiFi</div>
+    <p class="field__hint" id="fw-build">Checking controller...</p>
+    <p class="field__hint">Choose the application firmware.bin from your PlatformIO build. Park the vehicle, release all light inputs, and keep power connected. Lights pause during the update. Saved settings and profiles are kept.</p>
+    <div class="field"><label class="field__label" for="fw-file">Firmware file</label>
+      <input class="txt-input" type="file" id="fw-file" accept=".bin,application/octet-stream"></div>
+    <div class="field"><label class="field__label" for="fw-password">Controller WiFi password</label>
+      <input class="txt-input" type="password" id="fw-password" autocomplete="off" placeholder="Controller AP password">
+      <small class="field__hint">Use the controller AP password, even on home WiFi. Password changes take effect after restarting the controller.</small></div>
+    <button class="btn btn--primary settings-action" id="fw-upload" onclick="uploadFirmware()">Upload &amp; Restart</button>
+    <progress id="fw-progress" max="100" value="0" aria-label="Firmware upload progress" style="width:100%;margin-top:14px"></progress>
+    <p class="field__hint" id="fw-status" role="status" aria-live="polite">Waiting for controller</p>
+    <details style="margin-top:12px"><summary>Upload from VS Code instead</summary>
+      <p class="field__hint">Select esp32-s3-pcb-ota in PlatformIO and run Upload. Connect your computer to this controller's WiFi, or use its IP on your home network. USB uploads remain available through esp32-s3-pcb.</p>
+    </details>
+  </div></div>
 
 </div><!-- /tab-network -->
 
@@ -962,6 +1040,9 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
           <button class="anim-tile" onclick="selectAnim(30)"><span class="anim-tile__name">Radar Sweep</span><span class="anim-tile__desc">Sweeping column scanner</span></button>
           <button class="anim-tile" onclick="selectAnim(31)"><span class="anim-tile__name">Aurora</span><span class="anim-tile__desc">Flowing northern lights</span></button>
           <button class="anim-tile" onclick="selectAnim(32)"><span class="anim-tile__name">Glitch</span><span class="anim-tile__desc">Digital colour disruption</span></button>
+          <button class="anim-tile" onclick="selectAnim(33)"><span class="anim-tile__name">Afterburner</span><span class="anim-tile__desc">Glowing exhaust rings and amber jets</span></button>
+          <button class="anim-tile" onclick="selectAnim(34)"><span class="anim-tile__name">Tunnel Grid</span><span class="anim-tile__desc">Perspective gates and converging rails</span></button>
+          <button class="anim-tile" onclick="selectAnim(35)"><span class="anim-tile__name">Apex Weave</span><span class="anim-tile__desc">Interlaced diagonal ribbons</span></button>
         </div>
       </div>
       <div class="field field--last" id="show-text-row" style="display:none">
@@ -1174,6 +1255,9 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
           <button class="anim-tile preview-trigger" onclick="previewShow(30)"><span class="anim-tile__name">Radar Sweep</span><span class="anim-tile__desc">Sweeping column scanner</span></button>
           <button class="anim-tile preview-trigger" onclick="previewShow(31)"><span class="anim-tile__name">Aurora</span><span class="anim-tile__desc">Flowing northern lights</span></button>
           <button class="anim-tile preview-trigger" onclick="previewShow(32)"><span class="anim-tile__name">Glitch</span><span class="anim-tile__desc">Digital colour disruption</span></button>
+          <button class="anim-tile preview-trigger" onclick="previewShow(33)"><span class="anim-tile__name">Afterburner</span><span class="anim-tile__desc">Glowing exhaust rings and amber jets</span></button>
+          <button class="anim-tile preview-trigger" onclick="previewShow(34)"><span class="anim-tile__name">Tunnel Grid</span><span class="anim-tile__desc">Perspective gates and converging rails</span></button>
+          <button class="anim-tile preview-trigger" onclick="previewShow(35)"><span class="anim-tile__name">Apex Weave</span><span class="anim-tile__desc">Interlaced diagonal ribbons</span></button>
       </div>
     </div>
   </div>
@@ -1191,23 +1275,54 @@ input[type=color]::-webkit-color-swatch         { border: none; border-radius: 8
       <div class="row"><span>Last Preview Action</span><span class="row__value" id="preview-last-action">none</span></div>
       <div class="row"><span>Last Action Age</span><span class="row__value" id="preview-last-age">--</span></div>
       <div class="row"><span>Driver Inputs</span><span class="row__value" id="preview-driver-live">0x00</span></div>
-      <div class="row row--last"><span>Passenger Inputs</span><span class="row__value" id="preview-passenger-live">0x00</span></div>
+      <div class="row"><span>Passenger Inputs</span><span class="row__value" id="preview-passenger-live">0x00</span></div>
+      <div class="row"><span>LED Transport</span><span class="row__value" id="output-transport">--</span></div>
+      <div class="row"><span>Driver Output</span><span class="row__value" id="output-driver">--</span></div>
+      <div class="row"><span>Passenger Output</span><span class="row__value" id="output-passenger">--</span></div>
+      <div class="row"><span>Frames Sent (Driver / Passenger)</span><span class="row__value" id="output-frames">--</span></div>
+      <div class="row row--last"><span>Output Errors (Driver / Passenger)</span><span class="row__value" id="output-errors">--</span></div>
     </div>
   </div>
 
+  <div class="card" id="pcb-input-card" style="display:none">
+    <div class="card-hd"><div>
+      <div class="card-title">PCB Input Diagnostics</div>
+      <div class="card-desc">Raw electrical levels before mapping or debounce. Switch on one vehicle signal at a time.</div>
+    </div></div>
+    <div class="card-body">
+      <div id="pcb-input-rows"></div>
+      <div class="row"><span>OPTO1 through OPTO6</span><span class="row__value" id="pcb-input-bits">------</span></div>
+      <p class="field__hint">1 = HIGH, 0 = LOW. Record this six-digit value with all signals off, then with only running, brake, or reverse on.</p>
+      <p class="field__hint" id="pcb-input-polarity"></p>
+    </div>
+  </div>
 </div><!-- /tab-preview -->
 
 <!-- ── Action bar ─────────────────────────────────────────────────────────── -->
 <div class="action-bar">
-  <button class="btn btn--ghost"     onclick="resetDefaults()">Reset</button>
-  <button class="btn btn--secondary" onclick="rebootDevice()">Reboot</button>
-  <button class="btn btn--primary"   id="save-btn" onclick="saveSettings()">Save</button>
+  <button class="btn btn--ghost settings-action" onclick="revertSettings()">Revert</button>
+  <button class="btn btn--secondary settings-action" id="apply-btn" onclick="saveSettings(false)">Apply</button>
+  <button class="btn btn--primary settings-action" id="save-btn" onclick="saveSettings(true)">Save</button>
 </div>
 
 <!-- ── Toast ──────────────────────────────────────────────────────────────── -->
 <div class="toast" id="toast"></div>
 
 <script>
+function fetchWithTimeout(url, options) {
+  var controller = new AbortController();
+  var timer = setTimeout(function() { controller.abort(); }, 4000);
+  return fetch(url, Object.assign({}, options || {}, { signal: controller.signal }))
+    .then(function(response) {
+      // Keep the deadline active until the whole response has arrived.
+      return response.clone().text().then(function() { return response; });
+    })
+    .catch(function(e) {
+      if (e.name === 'AbortError') throw new Error('Controller did not respond within 4 seconds');
+      throw e;
+    })
+    .finally(function() { clearTimeout(timer); });
+}
 /* ── Tab navigation ──────────────────────────────────────────────────────── */
 var tabs = document.querySelectorAll('.mode-btn');
 tabs.forEach(function(btn) {
@@ -1239,6 +1354,8 @@ function setSyncStatus(msg) {
 }
 
 function updateSyncAge() {
+  if (g_formDirty) { setSyncStatus("Edited - Apply to try, Save to keep"); return; }
+  if (g_pendingSettings) { setSyncStatus("Applied temporarily - Save to keep, Revert to undo"); return; }
   if (!g_lastSyncMs) return;
   var sec = Math.max(0, Math.floor((Date.now() - g_lastSyncMs) / 1000));
   if (sec < 5) setSyncStatus('Synced just now');
@@ -1254,38 +1371,19 @@ function bindSlider(id, suffix) {
 }
 bindSlider('brightness');
 bindSlider('brightness_dim', '%');
+bindSlider('turn_sweep_ms', ' ms');
+bindSlider('turn_hold_ms', ' ms');
+bindSlider('turn_off_ms', ' ms');
 bindSlider('turn_blink_ms', ' ms');
+bindSlider('brake_speed', '%');
+bindSlider('reverse_speed', '%');
+bindSlider('run_speed', '%');
 bindSlider('frame_ms', ' ms');
 bindSlider('show_speed', '%');
 
-/* ── Display tab — live auto-persist ──────────────────────────────────────── */
+/* ── Display tab — staged edits ──────────────────────────────────────── */
 function postDisplaySettings() {
-  var brightnessEl = document.getElementById('brightness');
-  var brightnessDimEl = document.getElementById('brightness_dim');
-  var lensPresetEl = document.getElementById('lens_preset');
-  var startupAnimEl = document.getElementById('startup_anim');
-  if (!brightnessEl || !brightnessDimEl || !lensPresetEl || !startupAnimEl) {
-    console.warn('Display auto-save skipped: missing one or more display controls');
-    return;
-  }
-  fetch('/api/settings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      brightness:     +brightnessEl.value,
-      brightness_dim: +brightnessDimEl.value,
-      lens_preset:    +lensPresetEl.value,
-      startup_anim:   startupAnimEl.checked ? 1 : 0
-    })
-  })
-  .then(function(r) {
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    g_lastSyncMs = Date.now();
-    updateSyncAge();
-  })
-  .catch(function(e) {
-    console.warn('Display auto-save failed:', e && e.message ? e.message : e);
-  });
+  markFormDirty();
 }
 var brightnessEl = document.getElementById('brightness');
 if (brightnessEl) brightnessEl.addEventListener('change', postDisplaySettings);
@@ -1308,9 +1406,9 @@ bindColor('turn_color',    'turn_hex');
 bindColor('reverse_color', 'reverse_hex');
 bindColor('run_color',     'run_hex');
 var runColorEl = document.getElementById('run_color');
-if (runColorEl) runColorEl.addEventListener('input', triggerRestPulse);
+
 var runHexEl = document.getElementById('run_hex');
-if (runHexEl) runHexEl.addEventListener('change', triggerRestPulse);
+
 var brightDimEl = document.getElementById('brightness_dim');
 if (brightDimEl) brightDimEl.addEventListener('change', triggerRestPulse);
 
@@ -1326,7 +1424,8 @@ var PREVIEW_FAVORITES = [0, 5, 26, 27];
 var PREVIEW_ANIM_CATS = [
   'show','show','warning','warning','aggressive','warning','warning','show','subtle','show','warning',
   'show','show','subtle','subtle','warning','subtle','show','subtle','show','show','subtle','show',
-  'warning','subtle','aggressive','aggressive','aggressive','show','aggressive','warning','subtle','aggressive'
+  'warning','subtle','aggressive','aggressive','aggressive','show','aggressive','warning','subtle','aggressive',
+  'aggressive','show','show'
 ];
 
 function setPreviewBusy(busy) {
@@ -1394,30 +1493,12 @@ function selectAnim(n) {
   postShowSettings();
 }
 function postShowSettings() {
-  fetch('/api/settings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      show_mode:  document.getElementById('show_mode').checked ? 1 : 0,
-      show_anim:  g_showAnim,
-      show_speed: +document.getElementById('show_speed').value,
-      show_text:  document.getElementById('show_text').value
-    })
-  }).catch(function() {});
+  markFormDirty();
 }
 
-/* ── Animations tab — live auto-apply ────────────────────────────────────── */
+/* ── Animations tab — staged edits ────────────────────────────────────── */
 function postAnimSettings() {
-  fetch('/api/settings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      brake_anim:   +document.getElementById('brake_anim').value,
-      turn_anim:    +document.getElementById('turn_anim').value,
-      reverse_anim: +document.getElementById('reverse_anim').value,
-      run_anim:     +document.getElementById('run_anim').value
-    })
-  }).catch(function() {});
+  markFormDirty();
 }
 
 /* ── Rest mode ───────────────────────────────────────────────────────────── */
@@ -1428,19 +1509,8 @@ function triggerRestPulse() {
     preview('rest_pulse').catch(function(e) { console.warn('Rest pulse preview failed:', e && e.message ? e.message : e); });
   }, 120);
 }
-function postRestSettings(withPulse) {
-  fetch('/api/settings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      rest_mode: document.getElementById('rest_mode').checked ? 1 : 0
-    })
-  })
-  .then(function(r) {
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    if (withPulse) preview('rest_pulse').catch(function(e) { console.warn('Rest settings pulse failed:', e && e.message ? e.message : e); });
-  })
-  .catch(function() {});
+function postRestSettings() {
+  markFormDirty();
 }
 
 /* ── Software input toggles ──────────────────────────────────────────────── */
@@ -1454,12 +1524,13 @@ function setSoftButtonState(name) {
   el.classList.toggle('preview-card--active', !!g_softInputs[name]);
 }
 function toggleSoft(name) {
+  document.getElementById('soft_enable').checked = true;
   g_softInputs[name] = !g_softInputs[name];
   setSoftButtonState(name);
   postSoftInputs();
 }
 function postSoftInputs() {
-  fetch('/api/test_inputs', {
+  fetchWithTimeout('/api/test_inputs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -1489,7 +1560,7 @@ function postSoftInputs() {
 function postPreview(payload) {
   if (g_previewBusy) return Promise.reject(new Error('Preview request in flight'));
   setPreviewBusy(true);
-  return fetch('/api/preview', {
+  return fetchWithTimeout('/api/preview', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
@@ -1528,7 +1599,7 @@ function applyPreviewResponse(resp) {
 }
 
 function postPreviewLockout() {
-  fetch('/api/settings', {
+  fetchWithTimeout('/api/settings', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ preview_lockout: document.getElementById('preview_lockout').checked ? 1 : 0 })
@@ -1675,12 +1746,14 @@ var PRESETS = {
   murdered: { brake:[120,0,0],   turn:[140,50,0],  reverse:[70,70,70],   run:[10,0,0]  }
 };
 function applyPreset(name) {
+  g_formDirty = true; g_editVersion++;
+  setSyncStatus("Edited - Apply to try, Save to keep");
   var p = PRESETS[name]; if (!p) return;
   setColor('brake_color',   'brake_hex',   p.brake[0],   p.brake[1],   p.brake[2]);
   setColor('turn_color',    'turn_hex',    p.turn[0],    p.turn[1],    p.turn[2]);
   setColor('reverse_color', 'reverse_hex', p.reverse[0], p.reverse[1], p.reverse[2]);
   setColor('run_color',     'run_hex',     p.run[0],     p.run[1],     p.run[2]);
-  toast('Preset applied \u2014 tap Save to keep it');
+  toast('Preset selected - Apply to try it');
 }
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
@@ -1711,18 +1784,82 @@ function fmtUptime(s) {
 function fmtMaskHex(v) {
   return '0x' + ('0' + (v & 0xFF).toString(16)).slice(-2).toUpperCase();
 }
+function describeInputs(mask) {
+  var names = ['Brake', 'Running', 'Turn', 'Reverse'];
+  var active = names.filter(function(_, bit) { return !!(mask & (1 << bit)); });
+  return fmtMaskHex(mask) + ' ' + (active.length ? active.join(', ') : 'None');
+}
+function renderPcbInputs(s) {
+  var pins = s.pcb_input_pins, levels = s.pcb_input_raw_levels;
+  var valid = Array.isArray(pins) && Array.isArray(levels) && pins.length === 6 && levels.length === 6;
+  document.getElementById('pcb-input-card').style.display = valid ? '' : 'none';
+  if (!valid) return;
+  var rows = document.getElementById('pcb-input-rows');
+  rows.textContent = '';
+  levels.forEach(function(level, i) {
+    var row = document.createElement('div'); row.className = 'row';
+    var label = document.createElement('span');
+    label.textContent = 'OPTO' + (i + 1) + ' / GPIO ' + pins[i];
+    var value = document.createElement('span'); value.className = 'row__value';
+    value.textContent = level ? 'HIGH (1)' : 'LOW (0)';
+    row.appendChild(label); row.appendChild(value); rows.appendChild(row);
+  });
+  document.getElementById('pcb-input-bits').textContent = levels.map(function(v) { return v ? '1' : '0'; }).join('');
+  document.getElementById('pcb-input-polarity').textContent =
+    'Current firmware treats ' + (s.input_active_level ? 'HIGH' : 'LOW') + ' as active. Raw readings above do not assume that polarity.';
+}
 
 /* ── Load settings ───────────────────────────────────────────────────────── */
+var g_pendingSettings = false;
+var g_haveSettings = false;
+var g_reloadRequested = false;
+var g_formDirty = false;
+var g_editVersion = 0;
+function markFormDirty() {
+  g_formDirty = true; g_editVersion++;
+  updateSyncAge();
+}
+document.addEventListener("input", function(e) {
+  if (e.target.matches("input, select, textarea") &&
+      !e.target.id.startsWith('profile-') && !e.target.id.startsWith('fw-') && !e.target.closest('#tab-preview')) markFormDirty();
+});
+function updateTurnTiming() {
+  var custom = +document.getElementById('turn_custom').value === 1;
+  document.getElementById('custom-turn-fields').hidden = !custom;
+  document.getElementById('turn_blink_ms').disabled = custom;
+  var total = custom ? ['turn_sweep_ms','turn_hold_ms','turn_off_ms'].reduce(function(sum, id) {
+    return sum + +document.getElementById(id).value;
+  }, 0) : +document.getElementById('turn_blink_ms').value;
+  document.getElementById('turn-timing-summary').textContent = 'Full cycle: ' + total + ' ms (' + (60000 / total).toFixed(0) + ' flashes/min)';
+}
+['turn_custom','turn_blink_ms','turn_sweep_ms','turn_hold_ms','turn_off_ms'].forEach(function(id) {
+  document.getElementById(id).addEventListener('input', updateTurnTiming);
+});
+
 function loadSettings() {
-  if (g_loadInFlight || g_saveInFlight || document.hidden) return;
+  if (g_loadInFlight) { g_reloadRequested = true; return; }
+  if (g_saveInFlight || g_firmwareUploading || document.hidden) return;
+  var requestVersion = g_editVersion;
   g_loadInFlight = true;
   setSyncStatus('Syncing\u2026');
-  fetch('/api/settings')
-    .then(function(r) { return r.json(); })
+  fetchWithTimeout('/api/settings')
+    .then(readResponse)
     .then(function(s) {
+      if (g_saveInFlight || requestVersion !== g_editVersion) return;
+      g_haveSettings = true;
+      g_pendingSettings = !!s.settings_pending;
+      if (!g_formDirty) {
       setSlider('brightness',     s.brightness);
       setSlider('brightness_dim', s.brightness_dim, '%');
+      setSlider('turn_sweep_ms', s.turn_sweep_ms, ' ms');
+      setSlider('turn_hold_ms', s.turn_hold_ms, ' ms');
+      setSlider('turn_off_ms', s.turn_off_ms, ' ms');
       setSlider('turn_blink_ms',  s.turn_blink_ms, ' ms');
+      document.getElementById('turn_custom').value = s.turn_custom;
+      updateTurnTiming();
+      setSlider('brake_speed', s.brake_speed, '%');
+      setSlider('reverse_speed', s.reverse_speed, '%');
+      setSlider('run_speed', s.run_speed, '%');
       setSlider('frame_ms',       s.frame_ms,       ' ms');
 
       setColor('brake_color',   'brake_hex',   s.brake_r,   s.brake_g,   s.brake_b);
@@ -1753,6 +1890,7 @@ function loadSettings() {
       document.getElementById('sta_pass').value  = '';
       updateWifiBlocks();
 
+      } // Keep diagnostics live without overwriting staged form edits.
       document.getElementById('soft_enable').checked = !!s.soft_inputs_enabled;
       var dm = (+s.soft_driver_mask) || 0;
       var pm = (+s.soft_passenger_mask) || 0;
@@ -1774,8 +1912,14 @@ function loadSettings() {
       }
       var liveDm = (+s.live_driver_mask) || 0;
       var livePm = (+s.live_passenger_mask) || 0;
-      document.getElementById('preview-driver-live').textContent = fmtMaskHex(liveDm);
-      document.getElementById('preview-passenger-live').textContent = fmtMaskHex(livePm);
+      document.getElementById('preview-driver-live').textContent = describeInputs(liveDm);
+      document.getElementById('preview-passenger-live').textContent = describeInputs(livePm);
+      renderPcbInputs(s);
+      document.getElementById('output-transport').textContent = s.output_transport || '--';
+      document.getElementById('output-driver').textContent = (s.output_driver_state || '--') + ' / ' + (s.output_driver_lit || 0) + ' pixels';
+      document.getElementById('output-passenger').textContent = (s.output_passenger_state || '--') + ' / ' + (s.output_passenger_lit || 0) + ' pixels';
+      document.getElementById('output-frames').textContent = (s.output_driver_frames || 0) + ' / ' + (s.output_passenger_frames || 0);
+      document.getElementById('output-errors').textContent = (s.output_driver_error || 0) + ' / ' + (s.output_passenger_error || 0);
       if (s.preview_hard_override) {
         updatePreviewWarning('Safety override: physical brake/reverse is active and preview cannot suppress it.');
       } else {
@@ -1810,7 +1954,10 @@ function loadSettings() {
       setSyncStatus('Sync failed');
       toast('Could not reach device', 'err');
     })
-    .finally(function() { g_loadInFlight = false; });
+    .finally(function() {
+      g_loadInFlight = false;
+      if (g_reloadRequested) { g_reloadRequested = false; loadSettings(); }
+    });
 }
 
 /* ── Collect settings ────────────────────────────────────────────────────── */
@@ -1822,7 +1969,14 @@ function collectSettings() {
   return {
     brightness:     +document.getElementById('brightness').value,
     brightness_dim: +document.getElementById('brightness_dim').value,
+    turn_sweep_ms: +document.getElementById('turn_sweep_ms').value,
+    turn_hold_ms: +document.getElementById('turn_hold_ms').value,
+    turn_off_ms: +document.getElementById('turn_off_ms').value,
+    turn_custom: +document.getElementById('turn_custom').value,
     turn_blink_ms:  +document.getElementById('turn_blink_ms').value,
+    brake_speed: +document.getElementById('brake_speed').value,
+    reverse_speed: +document.getElementById('reverse_speed').value,
+    run_speed: +document.getElementById('run_speed').value,
     frame_ms:       +document.getElementById('frame_ms').value,
     brake_r: br.r, brake_g: br.g, brake_b: br.b,
     turn_r:  tu.r, turn_g:  tu.g, turn_b:  tu.b,
@@ -1849,47 +2003,116 @@ function collectSettings() {
 }
 
 /* ── Save settings ───────────────────────────────────────────────────────── */
-function saveSettings() {
-  var btn = document.getElementById('save-btn');
-  var saved = false;
+function readResponse(r) {
+  return r.json().then(function(body) {
+    if (!r.ok) throw new Error(body.error || ('HTTP ' + r.status));
+    return body;
+  });
+}
+function settingsAction(url, payload, success) {
+  if (g_saveInFlight || g_firmwareUploading) return Promise.resolve(false);
+  if (!g_haveSettings) { toast('Wait for the controller to connect', 'err'); return Promise.resolve(false); }
   g_saveInFlight = true;
-  btn.textContent = 'Saving\u2026';
-  fetch('/api/settings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(collectSettings())
-  })
-  .then(function(r) {
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    toast('Settings saved \u2713', 'ok');
-    g_lastSyncMs = Date.now();
+  var version = ++g_editVersion;
+  document.querySelectorAll('.settings-action').forEach(function(b) { b.disabled = true; });
+  return fetchWithTimeout(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)})
+    .then(readResponse)
+    .then(function(result) { success(version === g_editVersion, result); return true; })
+    .catch(function(e) { toast(e.message, 'err'); return false; })
+    .finally(function() {
+      g_saveInFlight = false;
+      document.querySelectorAll('.settings-action').forEach(function(b) { b.disabled = false; });
+      loadSettings();
+    });
+}
+function saveSettings(persist) {
+  var data = collectSettings();
+  data.persist = !!persist;
+  return settingsAction('/api/settings', data, function(unchanged) {
+    if (unchanged) g_formDirty = false;
+    g_pendingSettings = !persist;
+    toast(persist ? 'Settings saved for startup' : 'Applied temporarily - Save to keep', 'ok');
     updateSyncAge();
-    saved = true;
-  })
-  .catch(function(e) { toast('Save failed: ' + e.message, 'err'); })
-  .finally(function() {
-    g_saveInFlight = false;
-    btn.textContent = 'Save';
-    if (saved) loadSettings();
+  });
+}
+function revertSettings() {
+  if ((g_formDirty || g_pendingSettings) && !confirm('Discard edits and restore the last saved settings?')) return;
+  return settingsAction('/api/revert', {}, function(unchanged) {
+    if (unchanged) g_formDirty = false;
+    g_pendingSettings = false;
+    toast('Restored last saved settings', 'ok');
+  });
+}
+var g_profiles = [];
+function selectProfileSlot() {
+  var slot = +document.getElementById('profile-slot').value;
+  var profile = g_profiles[slot];
+  document.getElementById('profile-name').value = profile ? profile.name : '';
+}
+function loadProfiles() {
+  var select = document.getElementById('profile-slot');
+  var selected = select.value;
+  return fetchWithTimeout('/api/profiles').then(readResponse).then(function(data) {
+    g_profiles = data.profiles;
+    select.textContent = '';
+    g_profiles.forEach(function(p) {
+      var option = document.createElement('option');
+      option.value = p.slot;
+      option.textContent = (p.slot + 1) + '. ' + (p.occupied ? p.name : 'Empty');
+      select.appendChild(option);
+    });
+    select.value = g_profiles.some(function(p) { return String(p.slot) === selected; }) ? selected : '0';
+    selectProfileSlot();
+    document.getElementById('profile-status').textContent = 'Profiles ready';
+  }).catch(function(e) {
+    document.getElementById('profile-status').textContent = e.message;
+  });
+}
+function profileAction(action) {
+  var slot = +document.getElementById('profile-slot').value;
+  var profile = g_profiles[slot];
+  if (!profile) { toast('Profiles have not loaded yet', 'err'); return; }
+  var payload = {action: action, slot: slot};
+  if (action === 'save') {
+    payload.name = document.getElementById('profile-name').value.trim();
+    if (!payload.name || new TextEncoder().encode(payload.name).length > 24) {
+      toast('Use a profile name from 1 to 24 bytes', 'err'); return;
+    }
+    if (profile.occupied && !confirm('Replace profile "' + profile.name + '" with the current form settings?')) return;
+    var form = collectSettings();
+    payload.settings = {};
+    ["brightness", "brightness_dim", "turn_blink_ms", "turn_custom", "turn_sweep_ms", "turn_hold_ms", "turn_off_ms", "frame_ms", "brake_speed", "reverse_speed", "run_speed", "show_speed", "brake_r", "brake_g", "brake_b", "turn_r", "turn_g", "turn_b", "reverse_r", "reverse_g", "reverse_b", "run_r", "run_g", "run_b", "brake_anim", "turn_anim", "reverse_anim", "run_anim", "show_anim", "rest_mode", "show_text"].forEach(function(key) { payload.settings[key] = form[key]; });
+  } else {
+    if (!profile.occupied) { toast('This profile slot is empty', 'err'); return; }
+    if (action === 'delete' && !confirm('Delete profile "' + profile.name + '"?')) return;
+    if (action === 'load' && g_formDirty && !confirm('Replace unsaved form edits and apply this lighting profile?')) return;
+  }
+  return settingsAction('/api/profiles', payload, function(unchanged) {
+    if (action === 'load') {
+      if (unchanged) g_formDirty = false;
+      g_pendingSettings = true;
+      toast('Profile applied - Save to use at startup', 'ok');
+    } else {
+      toast(action === 'save' ? 'Profile saved' : 'Profile deleted', 'ok');
+      loadProfiles();
+    }
   });
 }
 
 /* ── Reset defaults ──────────────────────────────────────────────────────── */
 function resetDefaults() {
-  if (!confirm('Reset all settings to factory defaults?')) return;
-  fetch('/api/reset', { method: 'POST' })
-    .then(function(r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      toast('Reset to defaults \u2713', 'ok');
-      loadSettings();
-    })
-    .catch(function() { toast('Reset failed', 'err'); });
+  if (!confirm('Reset settings to factory defaults? Named profiles will be kept.')) return;
+  return settingsAction('/api/reset', {}, function(unchanged) {
+    if (unchanged) g_formDirty = false;
+    g_pendingSettings = false;
+    toast('Factory defaults saved', 'ok');
+  });
 }
 
 /* ── Reboot ──────────────────────────────────────────────────────────────── */
 function rebootDevice() {
   if (!confirm('Reboot the device now?')) return;
-  fetch('/api/reboot', { method: 'POST' })
+  fetchWithTimeout('/api/reboot', { method: 'POST' })
     .then(function() { toast('Rebooting\u2026'); })
     .catch(function() { toast('Rebooting\u2026'); });
 }
@@ -1925,7 +2148,141 @@ g_previewRecent = validRecent.slice(0, MAX_RECENT_ANIMS);
 renderQuickAnims();
 setPreviewStatus('Idle', 'None');
 
+
+// Firmware uses its own longer upload deadline and explicit restart confirmation.
+var g_firmwareInfo = null;
+var g_firmwareUploading = false;
+var g_firmwareDisabled = [];
+function firmwareStatus(text) { document.getElementById('fw-status').textContent = text; }
+function loadFirmwareInfo() {
+  if (g_firmwareUploading) return Promise.resolve();
+  return fetchWithTimeout('/api/firmware').then(readResponse).then(function(info) {
+    g_firmwareInfo = info;
+    document.getElementById('fw-build').textContent =
+      (info.target && info.target.indexOf('-PCB-') >= 0 ? 'ESP32-S3 PCB' : 'ESP32-S3 development board') +
+      ' / Built ' + info.build;
+    firmwareStatus(!info.available ? 'Install OTA-capable firmware by USB first.' :
+      info.busy ? 'Controller is updating.' : info.inputs_active ? 'Release all vehicle light inputs before updating.' :
+      'Ready. Maximum image: ' + (info.max_size / 1048576).toFixed(2) + ' MB');
+  }).catch(function(e) { firmwareStatus('Could not check firmware: ' + e.message); });
+}
+function firmwareBusy(busy) {
+  g_firmwareUploading = busy;
+  if (busy) {
+    g_firmwareDisabled = [];
+    document.querySelectorAll('input, select, textarea, button:not(.mode-btn)').forEach(function(el) {
+      g_firmwareDisabled.push([el, el.disabled]); el.disabled = true;
+    });
+  } else {
+    g_firmwareDisabled.forEach(function(pair) { pair[0].disabled = pair[1]; });
+    g_firmwareDisabled = [];
+    updateTurnTiming();
+  }
+}
+function waitForFirmwareRestart(oldBoot, uncertain) {
+  var deadline = Date.now() + 60000;
+  if (!uncertain) firmwareStatus('Firmware accepted. Controller restarting...');
+  return new Promise(function(resolve) {
+    function check() {
+      fetchWithTimeout('/api/firmware').then(readResponse).then(function(info) {
+        if (info.boot_id != null && info.boot_id !== oldBoot) {
+          g_firmwareInfo = info;
+          g_formDirty = false; g_pendingSettings = false;
+          firmwareBusy(false);
+          firmwareStatus(uncertain ? 'Controller restarted, but the upload was not acknowledged. Check the build before retrying.' :
+            'Update complete. Controller is back online.');
+          document.getElementById('fw-build').textContent = 'Built ' + info.build;
+          document.getElementById('fw-file').value = '';
+          document.getElementById('fw-progress').value = 100;
+          loadSettings(); loadProfiles();
+          resolve(!uncertain); return;
+        }
+        if (info.error) {
+          firmwareBusy(false);
+          firmwareStatus(info.error + '. Existing firmware retained.');
+          resolve(false); return;
+        }
+        retry();
+      }).catch(function() { retry(); });
+    }
+    function retry() {
+      if (Date.now() >= deadline) {
+        firmwareBusy(false);
+        firmwareStatus('Restart not confirmed. Reconnect to the controller and check its build before retrying.');
+        resolve(false);
+      } else setTimeout(check, 2000);
+    }
+    setTimeout(check, 1500);
+  });
+}
+async function uploadFirmware() {
+  if (g_firmwareUploading || g_saveInFlight) return false;
+  var file = document.getElementById('fw-file').files[0];
+  var password = document.getElementById('fw-password').value;
+  if (!file || !/\.bin$/i.test(file.name)) { firmwareStatus('Choose an application firmware.bin file.'); return false; }
+  if (!password) { firmwareStatus('Enter the controller WiFi password.'); return false; }
+  firmwareBusy(true);
+  ++g_editVersion; // Invalidate settings responses and prevent duplicate starts.
+  // Refresh eligibility immediately before starting, rather than trusting old UI data.
+  try {
+    var info = await fetchWithTimeout('/api/firmware').then(readResponse);
+    if (!info.available || info.busy) throw new Error('The controller is not ready for an update.');
+    if (info.inputs_active) throw new Error('Release all vehicle light inputs before updating.');
+    if (file.size < 288 || file.size > info.max_size) throw new Error('This image does not fit the firmware slot.');
+    var header = new Uint8Array(await file.slice(0, 288).arrayBuffer());
+    if (header[0] !== 0xe9 || header[12] !== 9 || header[13] !== 0 ||
+        header[32] !== 0x32 || header[33] !== 0x54 || header[34] !== 0xcd || header[35] !== 0xab)
+      throw new Error('Choose the ESP32-S3 application firmware.bin, not a bootloader or factory image.');
+    if (!confirm('Install this firmware and restart the controller?' +
+        ((g_formDirty || g_pendingSettings) ? ' Unsaved settings will be lost.' : ''))) { firmwareBusy(false); return false; }
+    document.getElementById('fw-progress').value = 0;
+    firmwareStatus('Uploading firmware...');
+    return await new Promise(function(resolve) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/firmware');
+      xhr.timeout = 180000;
+      var credentials = Array.from(new TextEncoder().encode('admin:' + password)).map(function(b) { return String.fromCharCode(b); }).join('');
+      xhr.setRequestHeader('Authorization', 'Basic ' + btoa(credentials));
+      xhr.setRequestHeader('X-Firmware-Size', String(file.size));
+      xhr.upload.onprogress = function(event) {
+        if (!event.lengthComputable) return;
+        var percent = Math.round(event.loaded * 100 / event.total);
+        document.getElementById('fw-progress').value = percent;
+        firmwareStatus(percent < 100 ? 'Uploading: ' + percent + '%' : 'Upload sent. Verifying firmware...');
+      };
+      xhr.onload = function() {
+        var response;
+        try { response = JSON.parse(xhr.responseText); } catch (_) { response = {}; }
+        if (xhr.status === 200 && response.ok && response.rebooting) {
+          waitForFirmwareRestart(info.boot_id, false).then(resolve);
+        } else {
+          firmwareBusy(false);
+          firmwareStatus(response.error || ('Update rejected (HTTP ' + xhr.status + '). Existing firmware retained.'));
+          resolve(false);
+        }
+      };
+      xhr.onerror = xhr.ontimeout = xhr.onabort = function() {
+        firmwareStatus('Connection interrupted. Checking whether the controller restarted...');
+        waitForFirmwareRestart(info.boot_id, true).then(resolve);
+      };
+      var body = new FormData(); body.append('firmware', file, file.name);
+      xhr.send(body);
+      document.getElementById('fw-password').value = '';
+    });
+  } catch (e) {
+    firmwareBusy(false);
+    firmwareStatus(e.message);
+    return false;
+  }
+}
+window.addEventListener('beforeunload', function(e) {
+  if (g_firmwareUploading) { e.preventDefault(); e.returnValue = ''; }
+});
+
 loadSettings();
+loadProfiles();
+loadFirmwareInfo();
+updateTurnTiming();
 setInterval(loadSettings, 15000);
 setInterval(updateSyncAge, 1000);
 document.addEventListener('visibilitychange', function() {
@@ -1990,9 +2347,17 @@ static void handleRoot() {
 static void handleGetSettings() {
     JsonDocument doc;
 
+    doc["settings_pending"] = settings_pending();
     doc["brightness"]     = g_settings.brightness;
     doc["brightness_dim"] = g_settings.brightness_dim;
     doc["turn_blink_ms"]  = g_settings.turn_blink_ms;
+    doc["turn_custom"] = g_settings.turn_custom;
+    doc["turn_sweep_ms"] = g_settings.turn_sweep_ms;
+    doc["turn_hold_ms"] = g_settings.turn_hold_ms;
+    doc["turn_off_ms"] = g_settings.turn_off_ms;
+    doc["brake_speed"] = g_settings.brake_speed;
+    doc["reverse_speed"] = g_settings.reverse_speed;
+    doc["run_speed"] = g_settings.run_speed;
     doc["frame_ms"]       = g_settings.frame_ms;
 
     doc["brake_r"]   = g_settings.brake_r;
@@ -2036,6 +2401,33 @@ static void handleGetSettings() {
     doc["soft_passenger_mask"] = g_soft_passenger_mask;
     doc["live_driver_mask"]    = g_live_driver_inputs;
     doc["live_passenger_mask"] = g_live_passenger_inputs;
+#if defined(CUSTOM_TAILLIGHTS_PCB)
+    const uint8_t rawLevels = inputs.rawPcbLevels();
+    JsonArray inputPins = doc["pcb_input_pins"].to<JsonArray>();
+    JsonArray inputLevels = doc["pcb_input_raw_levels"].to<JsonArray>();
+    for (unsigned i = 0; i < 6; ++i) {
+        inputPins.add(PCB_OPTO_PINS[i]);
+        inputLevels.add((rawLevels >> i) & 1);
+    }
+    doc["input_active_level"] = OPT_ACTIVE_LEVEL;
+#endif
+    doc["output_driver_state"] = lightStateName(g_lighting.driver);
+    doc["output_passenger_state"] = lightStateName(g_lighting.passenger);
+    doc["output_driver_lit"] = g_lighting.driverLit;
+    doc["output_passenger_lit"] = g_lighting.passengerLit;
+    doc["output_frames"] = g_lighting.frames;
+    doc["output_frame_age_ms"] = millis() - g_lighting.lastFrameMs;
+    doc["output_transport"] = ledTransportName();
+    const auto& driverOutput = ledTransportStatus(0);
+    const auto& passengerOutput = ledTransportStatus(1);
+    doc["output_driver_gpio"] = driverOutput.pin;
+    doc["output_passenger_gpio"] = passengerOutput.pin;
+    doc["output_driver_frames"] = driverOutput.completed;
+    doc["output_passenger_frames"] = passengerOutput.completed;
+    doc["output_driver_failures"] = driverOutput.failures;
+    doc["output_passenger_failures"] = passengerOutput.failures;
+    doc["output_driver_error"] = driverOutput.lastError;
+    doc["output_passenger_error"] = passengerOutput.lastError;
 
     const unsigned long nowMs = millis();
     const bool previewActive = nowMs < g_preview_until_ms;
@@ -2064,7 +2456,7 @@ static void handleGetSettings() {
 
 // ---------------------------------------------------------------------------
 // POST /api/settings
-// Accepts a JSON body, updates g_settings, persists to NVS, applies
+// Accepts a JSON body, updates g_settings, persists only with persist:true, applies
 // brightness immediately.  Only fields present in the body are changed.
 // ---------------------------------------------------------------------------
 static void handlePostSettings() {
@@ -2075,7 +2467,7 @@ static void handlePostSettings() {
 
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, _server.arg("plain"));
-    if (err) {
+    if (err || !doc.is<JsonObject>()) {
         _server.send(400, "application/json", "{\"error\":\"Bad JSON\"}");
         return;
     }
@@ -2087,6 +2479,20 @@ static void handlePostSettings() {
         g_settings.brightness_dim = (uint8_t)constrain(doc["brightness_dim"].as<int>(), 5, RUNNING_BRIGHTNESS_MAX_PERCENT);
     if (doc["turn_blink_ms"].is<int>())
         g_settings.turn_blink_ms  = (uint16_t)constrain(doc["turn_blink_ms"].as<int>(), 200, 1500);
+    if (doc["turn_custom"].is<int>())
+        g_settings.turn_custom = constrain(doc["turn_custom"].as<int>(), 0, 1);
+    if (doc["turn_sweep_ms"].is<int>())
+        g_settings.turn_sweep_ms = constrain(doc["turn_sweep_ms"].as<int>(), 50, 1500);
+    if (doc["turn_hold_ms"].is<int>())
+        g_settings.turn_hold_ms = constrain(doc["turn_hold_ms"].as<int>(), 0, 1500);
+    if (doc["turn_off_ms"].is<int>())
+        g_settings.turn_off_ms = constrain(doc["turn_off_ms"].as<int>(), 50, 1500);
+    if (doc["brake_speed"].is<int>())
+        g_settings.brake_speed = (uint8_t)constrain(doc["brake_speed"].as<int>(), 50, 200);
+    if (doc["reverse_speed"].is<int>())
+        g_settings.reverse_speed = (uint8_t)constrain(doc["reverse_speed"].as<int>(), 50, 200);
+    if (doc["run_speed"].is<int>())
+        g_settings.run_speed = (uint8_t)constrain(doc["run_speed"].as<int>(), 50, 200);
     if (doc["frame_ms"].is<int>())
         g_settings.frame_ms       = (uint8_t)constrain(doc["frame_ms"].as<int>(), 10, 100);
 
@@ -2103,13 +2509,13 @@ static void handlePostSettings() {
     if (doc["reverse_b"].is<int>()) g_settings.reverse_b = (uint8_t)constrain(doc["reverse_b"].as<int>(), 0, 255);
 
     if (doc["brake_anim"].is<int>())
-        g_settings.brake_anim   = (uint8_t)constrain(doc["brake_anim"].as<int>(),   0, 5);
+        g_settings.brake_anim   = (uint8_t)constrain(doc["brake_anim"].as<int>(),   0, BRAKE_ANIM_MAX);
     if (doc["turn_anim"].is<int>())
-        g_settings.turn_anim    = (uint8_t)constrain(doc["turn_anim"].as<int>(),    0, 5);
+        g_settings.turn_anim    = (uint8_t)constrain(doc["turn_anim"].as<int>(),    0, TURN_ANIM_MAX);
     if (doc["reverse_anim"].is<int>())
-        g_settings.reverse_anim = (uint8_t)constrain(doc["reverse_anim"].as<int>(), 0, 3);
+        g_settings.reverse_anim = (uint8_t)constrain(doc["reverse_anim"].as<int>(), 0, REVERSE_ANIM_MAX);
     if (doc["run_anim"].is<int>())
-        g_settings.run_anim     = (uint8_t)constrain(doc["run_anim"].as<int>(),     0, 3);
+        g_settings.run_anim     = (uint8_t)constrain(doc["run_anim"].as<int>(),     0, RUN_ANIM_MAX);
     if (doc["lens_preset"].is<int>())
         g_settings.lens_preset  = (uint8_t)constrain(doc["lens_preset"].as<int>(),  0, 3);
 
@@ -2126,7 +2532,7 @@ static void handlePostSettings() {
     if (doc["show_mode"].is<int>())
         g_settings.show_mode  = (uint8_t)constrain(doc["show_mode"].as<int>(), 0, 1);
     if (doc["show_anim"].is<int>())
-        g_settings.show_anim  = (uint8_t)constrain(doc["show_anim"].as<int>(), 0, 32);
+        g_settings.show_anim  = (uint8_t)constrain(doc["show_anim"].as<int>(), 0, SHOW_ANIM_MAX);
     if (doc["show_speed"].is<int>())
         g_settings.show_speed = (uint8_t)constrain(doc["show_speed"].as<int>(), 50, 200);
     if (doc["show_text"].is<const char*>()) {
@@ -2169,7 +2575,10 @@ static void handlePostSettings() {
     // Apply brightness immediately without waiting for a reboot
     FastLED.setBrightness(g_settings.brightness);
 
-    settings_save();
+    if (doc["persist"] == true && !settings_save()) {
+        _server.send(500, "application/json", "{\"error\":\"Could not save settings; changes remain temporary\"}");
+        return;
+    }
     addCorsHeaders();
     _server.send(200, "application/json", "{\"ok\":true}");
 }
@@ -2178,8 +2587,75 @@ static void handlePostSettings() {
 // POST /api/reset
 // Restores compiled-in defaults, persists, re-applies brightness.
 // ---------------------------------------------------------------------------
+static void handleRevert() {
+    settings_revert();
+    FastLED.setBrightness(g_settings.brightness);
+    _server.send(200, "application/json", "{\"ok\":true}");
+}
+static void handleGetProfiles() {
+    JsonDocument doc;
+    JsonArray slots = doc["profiles"].to<JsonArray>();
+    for (int slot = 0; slot < PROFILE_COUNT; ++slot) {
+        Settings candidate = g_settings;
+        char name[PROFILE_NAME_SIZE] = {};
+        const bool occupied = profile_read(slot, name, candidate);
+        JsonObject item = slots.add<JsonObject>();
+        item["slot"] = slot;
+        item["name"] = name;
+        item["occupied"] = occupied;
+    }
+    String out;
+    serializeJson(doc, out);
+    _server.send(200, "application/json", out);
+}
+static void handlePostProfiles() {
+    JsonDocument doc;
+    if (deserializeJson(doc, _server.arg("plain")) || !doc["slot"].is<int>()) {
+        _server.send(400, "application/json", "{\"error\":\"Invalid profile request\"}");
+        return;
+    }
+    const int slot = doc["slot"].as<int>();
+    const char* action = doc["action"] | "";
+    if (slot < 0 || slot >= PROFILE_COUNT) {
+        _server.send(400, "application/json", "{\"error\":\"Invalid profile slot\"}");
+        return;
+    }
+    bool ok = false;
+    if (strcmp(action, "save") == 0) {
+        Settings candidate = g_settings;
+        const char* name = doc["name"] | "";
+        if (!name[0] || strlen(name) >= PROFILE_NAME_SIZE ||
+            !lightingFromJson(doc["settings"].as<JsonObjectConst>(), candidate)) {
+            _server.send(400, "application/json", "{\"error\":\"Use a name up to 24 bytes and valid lighting settings\"}");
+            return;
+        }
+        ok = profile_write(slot, name, candidate);
+    } else if (strcmp(action, "load") == 0) {
+        Settings candidate = g_settings;
+        char name[PROFILE_NAME_SIZE];
+        if (!profile_read(slot, name, candidate)) {
+            _server.send(404, "application/json", "{\"error\":\"Profile is empty or unreadable\"}");
+            return;
+        }
+        g_settings = candidate;
+        FastLED.setBrightness(g_settings.brightness);
+        ok = true; // Loading does not change the saved startup configuration.
+    } else if (strcmp(action, "delete") == 0) {
+        ok = profile_delete(slot);
+    } else {
+        _server.send(400, "application/json", "{\"error\":\"Unknown profile action\"}");
+        return;
+    }
+    _server.send(ok ? 200 : 500, "application/json", ok ? "{\"ok\":true}" : "{\"error\":\"Profile storage failed\"}");
+}
+
 static void handleReset() {
     settings_reset();
+    FastLED.setBrightness(g_settings.brightness);
+    if (!settings_save()) {
+        _server.send(500, "application/json", "{\"error\":\"Defaults applied temporarily; could not save\"}");
+        return;
+    }
     FastLED.setBrightness(g_settings.brightness);
     addCorsHeaders();
     _server.send(200, "application/json", "{\"ok\":true}");
@@ -2254,8 +2730,6 @@ static void handlePreview() {
         resp["ok"] = true;
         resp["action"] = "stop";
         resp["preview_active"] = 0;
-        resp["applied_driver"] = "off";
-        resp["applied_passenger"] = "off";
         String out;
         serializeJson(resp, out);
         addCorsHeaders();
@@ -2265,6 +2739,11 @@ static void handlePreview() {
 
     if (lockoutActive) {
         sendJsonError(423, "lockout_active", "Preview lockout is active while live driving signals are present");
+        return;
+    }
+
+    if (physicalPreviewBlocked(dIn, pIn)) {
+        sendJsonError(409, "physical_signal_active", "Physical brake or reverse is active; preview was not started");
         return;
     }
 
@@ -2297,7 +2776,7 @@ static void handlePreview() {
     else if (strcmp(s, "show")        == 0) {
         // Optional anim index — update show_anim so the correct effect plays
         if (doc["anim"].is<int>()) {
-            g_settings.show_anim = (uint8_t)constrain(doc["anim"].as<int>(), 0, 32);
+            g_settings.show_anim = (uint8_t)constrain(doc["anim"].as<int>(), 0, SHOW_ANIM_MAX);
         }
         ld = LightState::SHOW;
         lp = LightState::SHOW;
@@ -2320,8 +2799,8 @@ static void handlePreview() {
     JsonDocument resp;
     resp["ok"] = true;
     resp["requested_state"] = s;
-    resp["applied_driver"] = lightStateName(ld);
-    resp["applied_passenger"] = lightStateName(lp);
+    resp["requested_driver"] = lightStateName(ld);
+    resp["requested_passenger"] = lightStateName(lp);
     resp["side"] = side;
     resp["duration_ms"] = durationMs;
     resp["preview_until_ms"] = g_preview_until_ms;
@@ -2368,6 +2847,13 @@ static void handleTestInputs() {
 
     if (doc["enabled"].is<bool>() || doc["enabled"].is<int>()) {
         g_soft_inputs_enabled = asBool(doc["enabled"]) ? 1 : 0;
+    }
+
+    if (g_soft_inputs_enabled) {
+        // Selecting input testing takes control from show/preview modes.
+        g_settings.show_mode = 0;
+        g_preview_until_ms = 0;
+        g_rest_pulse_until_ms = 0;
     }
 
     if (doc["driver"].is<JsonObjectConst>()) {
@@ -2447,6 +2933,9 @@ void WifiServer::begin() {
     _server.on("/index.html",     HTTP_GET,  handleRoot);
     _server.on("/api/settings",   HTTP_GET,  handleGetSettings);
     _server.on("/api/settings",   HTTP_POST, handlePostSettings);
+    _server.on("/api/revert", HTTP_POST, handleRevert);
+    _server.on("/api/profiles", HTTP_GET, handleGetProfiles);
+    _server.on("/api/profiles", HTTP_POST, handlePostProfiles);
     _server.on("/api/reset",      HTTP_POST, handleReset);
     _server.on("/api/reboot",     HTTP_POST, handleReboot);
     _server.on("/api/preview",    HTTP_POST, handlePreview);
@@ -2488,12 +2977,16 @@ void WifiServer::begin() {
         Serial.println(F("[wifi] DNS captive portal started"));
     }
 
+    firmwareUpdateBegin(_server);
     _server.begin(80);
     Serial.println(F("[wifi] HTTP server ready on port 80"));
 }
 
 // ---------------------------------------------------------------------------
 void WifiServer::handle() {
+    firmwareUpdatePoll();
+    if (firmwareUpdateBusy()) return;
     if (g_ap_mode_active) _dns.processNextRequest();
     _server.handleClient();
+    firmwareUpdateAfterHttp();
 }

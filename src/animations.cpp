@@ -7,8 +7,17 @@
 #include "taillight.h"
 #include "config.h"
 #include "settings.h"
+#include "turn_timing.h"
 
 // ── Static instance definitions ─────────────────────────────────────────────
+AnimRunContour AnimationRegistry::_runContour;
+AnimRunLouvers AnimationRegistry::_runLouvers;
+AnimBrakeEdgeLock AnimationRegistry::_brakeEdgeD, AnimationRegistry::_brakeEdgeP;
+AnimTurnArrowhead AnimationRegistry::_turnArrowD, AnimationRegistry::_turnArrowP;
+AnimTurnThreeBar AnimationRegistry::_turnThreeD, AnimationRegistry::_turnThreeP;
+AnimShowAfterburner AnimationRegistry::_showAfterburner;
+AnimShowTunnel AnimationRegistry::_showTunnel;
+AnimShowApexWeave AnimationRegistry::_showApexWeave;
 AnimOff        AnimationRegistry::_off;
 AnimRunning    AnimationRegistry::_running;
 AnimRunBreathe AnimationRegistry::_runBreathe;
@@ -104,6 +113,8 @@ Animation* AnimationRegistry::get(LightState state, bool isDriver) {
                 case 1: return &_runBreathe;
                 case 2: return &_runShimmer;
                 case 3: return &_runComet;
+                case 4: return &_runContour;
+                case 5: return &_runLouvers;
                 default: return &_running;
             }
 
@@ -114,6 +125,7 @@ Animation* AnimationRegistry::get(LightState state, bool isDriver) {
                 case 3: return &_brakeStrobe;
                 case 4: return isDriver ? static_cast<Animation*>(&_brakeOuterInD) : static_cast<Animation*>(&_brakeOuterInP);
                 case 5: return &_brakeHeartbeat;
+                case 6: return isDriver ? static_cast<Animation*>(&_brakeEdgeD) : static_cast<Animation*>(&_brakeEdgeP);
                 default: return &_brake;
             }
 
@@ -125,6 +137,8 @@ Animation* AnimationRegistry::get(LightState state, bool isDriver) {
                 case 3: return isDriver ? static_cast<Animation*>(&_turnBounceD)  : static_cast<Animation*>(&_turnBounceP);
                 case 4: return isDriver ? static_cast<Animation*>(&_turnSplitD)   : static_cast<Animation*>(&_turnSplitP);
                 case 5: return isDriver ? static_cast<Animation*>(&_turnFastD)    : static_cast<Animation*>(&_turnFastP);
+                case 6: return isDriver ? static_cast<Animation*>(&_turnArrowD) : static_cast<Animation*>(&_turnArrowP);
+                case 7: return isDriver ? static_cast<Animation*>(&_turnThreeD) : static_cast<Animation*>(&_turnThreeP);
                 default: return isDriver ? static_cast<Animation*>(&_turnDriver)  : static_cast<Animation*>(&_turnPassenger);
             }
 
@@ -172,6 +186,9 @@ Animation* AnimationRegistry::get(LightState state, bool isDriver) {
                 case 30: return &_showRadar;
                 case 31: return &_showAurora;
                 case 32: return &_showGlitch;
+                case 33: return &_showAfterburner;
+                case 34: return &_showTunnel;
+                case 35: return &_showApexWeave;
                 default: return &_showRainbow;
             }
 
@@ -221,15 +238,21 @@ void AnimTurnSignal::begin(TailLight& side, LightState /*state*/) {
 
 void AnimTurnSignal::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
     unsigned long elapsed    = nowMs - _startMs;
-    unsigned long halfPeriod = g_settings.turn_blink_ms / 2;
-    unsigned long phase      = elapsed % g_settings.turn_blink_ms;
+    const TurnTiming timing = turnTiming(g_settings);
+    unsigned long halfPeriod = timing.sweep;
+    unsigned long phase      = elapsed % timing.period();
 
-    if (phase >= halfPeriod) {
+    if (phase >= timing.on()) {
         // Blank / off half
         side.fill(CRGB::Black);
         _step = 0;
         return;
     }
+    if (phase >= timing.sweep) {
+        side.fill(CRGB(g_settings.turn_r, g_settings.turn_g, g_settings.turn_b));
+        return;
+    }
+
 
     // _step advances from 0 to (STRIP_COLS - 1) across the sweep half-period.
     // STRIP_COLS is the reference width (21); MAIN_PANEL is narrower (17) and
@@ -273,8 +296,9 @@ void AnimHazard::begin(TailLight& side, LightState /*state*/) {
 }
 
 void AnimHazard::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
-    unsigned long phase = (nowMs - _startMs) % g_settings.turn_blink_ms;
-    bool on = phase < (g_settings.turn_blink_ms / 2);
+    const TurnTiming timing = turnTiming(g_settings);
+    unsigned long phase = (nowMs - _startMs) % timing.period();
+    bool on = phase < timing.on();
     side.fill(on ? CRGB(g_settings.turn_r, g_settings.turn_g, g_settings.turn_b)
                  : CRGB::Black);
 }
@@ -371,9 +395,9 @@ void AnimFlash::end(TailLight& side) {
 // ── AnimBrakePulse ────────────────────────────────────────────────────────────
 // Sin-wave breathe, ~1.2 s period.
 void AnimBrakePulse::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
-    // speed factor: 100 % = 1200 ms period
-    unsigned long period = (unsigned long)(1200UL * 100 / constrain(g_settings.show_speed, 50, 200));
-    uint8_t s = sin8((uint8_t)((nowMs * 256UL) / period));
+    const uint64_t visualMs = animationTime(nowMs, g_settings.brake_speed);
+    const unsigned long period = 1200UL;
+    uint8_t s = sin8((uint8_t)((visualMs * 256UL) / period));
     s = max(s, BRAKE_ANIM_MIN_SCALE);
     side.fill(brakeColour(s));
 }
@@ -389,7 +413,7 @@ void AnimBrakeCenterOut::update(TailLight& side, LightState /*state*/, unsigned 
     CRGB col(g_settings.brake_r, g_settings.brake_g, g_settings.brake_b);
     if (_done) { side.fill(col); return; }
 
-    unsigned long elapsed = nowMs - _startMs;
+    uint64_t elapsed = animationTime(nowMs - _startMs, g_settings.brake_speed);
     if (elapsed >= 400) { _done = true; side.fill(col); return; }
 
     side.fill(brakeColour(BRAKE_ANIM_MIN_SCALE));
@@ -411,7 +435,8 @@ void AnimBrakeCenterOut::update(TailLight& side, LightState /*state*/, unsigned 
 // ── AnimBrakeStrobe ───────────────────────────────────────────────────────────
 // Rapid 8 Hz strobe (125 ms period, 50 % duty cycle).
 void AnimBrakeStrobe::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
-    bool on = (nowMs % 125UL) < 62UL;
+    const uint64_t visualMs = animationTime(nowMs, g_settings.brake_speed);
+    bool on = (visualMs % 125UL) < 62UL;
     side.fill(on ? brakeColour() : brakeColour(BRAKE_ANIM_MIN_SCALE));
 }
 
@@ -426,8 +451,9 @@ void AnimTurnSimple::begin(TailLight& side, LightState /*state*/) {
 }
 
 void AnimTurnSimple::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
-    unsigned long phase = (nowMs - _startMs) % g_settings.turn_blink_ms;
-    bool on = phase < (g_settings.turn_blink_ms / 2);
+    const TurnTiming timing = turnTiming(g_settings);
+    unsigned long phase = (nowMs - _startMs) % timing.period();
+    bool on = phase < timing.on();
     side.fill(on ? CRGB(g_settings.turn_r, g_settings.turn_g, g_settings.turn_b)
                  : CRGB::Black);
 }
@@ -439,13 +465,19 @@ void AnimTurnGroupChase::begin(TailLight& side, LightState /*state*/) {
 }
 
 void AnimTurnGroupChase::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
-    unsigned long halfPeriod = g_settings.turn_blink_ms / 2;
-    unsigned long phase      = (nowMs - _startMs) % g_settings.turn_blink_ms;
+    const TurnTiming timing = turnTiming(g_settings);
+    unsigned long halfPeriod = timing.sweep;
+    unsigned long phase      = (nowMs - _startMs) % timing.period();
 
-    if (phase >= halfPeriod) {
+    if (phase >= timing.on()) {
         side.fill(CRGB::Black);
         return;
     }
+    if (phase >= timing.sweep) {
+        side.fill(CRGB(g_settings.turn_r, g_settings.turn_g, g_settings.turn_b));
+        return;
+    }
+
 
     // Advance a 4-column window across the sweep half-period
     static constexpr int GRP = 4;
@@ -476,13 +508,19 @@ void AnimTurnBounce::begin(TailLight& side, LightState /*state*/) {
 }
 
 void AnimTurnBounce::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
-    unsigned long halfPeriod = g_settings.turn_blink_ms / 2;
-    unsigned long phase      = (nowMs - _startMs) % g_settings.turn_blink_ms;
+    const TurnTiming timing = turnTiming(g_settings);
+    unsigned long halfPeriod = timing.sweep;
+    unsigned long phase      = (nowMs - _startMs) % timing.period();
 
-    if (phase >= halfPeriod) {
+    if (phase >= timing.on()) {
         side.fill(CRGB::Black);
         return;
     }
+    if (phase >= timing.sweep) {
+        side.fill(CRGB(g_settings.turn_r, g_settings.turn_g, g_settings.turn_b));
+        return;
+    }
+
 
     // Fill bottom segments with dim turn colour
     CRGB dimCol(g_settings.turn_r >> 2, g_settings.turn_g >> 2, g_settings.turn_b >> 2);
@@ -517,7 +555,8 @@ void AnimTurnBounce::update(TailLight& side, LightState /*state*/, unsigned long
 // ── AnimReversePulse ──────────────────────────────────────────────────────────
 // Smooth breathing pulse with the reverse colour, ~1.4 s period.
 void AnimReversePulse::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
-    uint8_t s = sin8((uint8_t)((nowMs * 256UL) / 1400UL));
+    const uint64_t visualMs = animationTime(nowMs, g_settings.reverse_speed);
+    uint8_t s = sin8((uint8_t)((visualMs * 256UL) / 1400UL));
     side.fill(CRGB(scale8(g_settings.reverse_r, s),
                    scale8(g_settings.reverse_g, s),
                    scale8(g_settings.reverse_b, s)));
@@ -530,8 +569,9 @@ void AnimReversePulse::update(TailLight& side, LightState /*state*/, unsigned lo
 // ── AnimRunBreathe ────────────────────────────────────────────────────────────
 // Slow breathing pulse with the running colour, ~3 s period.
 void AnimRunBreathe::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
+    const uint64_t visualMs = animationTime(nowMs, g_settings.run_speed);
     uint8_t dim = runningDimPercent();
-    uint8_t s   = sin8((uint8_t)((nowMs * 256UL) / 3000UL));
+    uint8_t s   = sin8((uint8_t)((visualMs * 256UL) / 3000UL));
     // Scale s to the range 20–255 so it never fully goes dark
     s = 20 + scale8(s, 235);
     uint8_t r = scale8((uint8_t)((g_settings.run_r * dim) / 100), s);
@@ -556,7 +596,7 @@ void AnimBrakeOuterIn::update(TailLight& side, LightState /*state*/, unsigned lo
     CRGB col(g_settings.brake_r, g_settings.brake_g, g_settings.brake_b);
     if (_done) { side.fill(col); return; }
 
-    unsigned long elapsed = nowMs - _startMs;
+    uint64_t elapsed = animationTime(nowMs - _startMs, g_settings.brake_speed);
     if (elapsed >= 400UL) { _done = true; side.fill(col); return; }
 
     side.fill(brakeColour(BRAKE_ANIM_MIN_SCALE));
@@ -579,8 +619,9 @@ void AnimBrakeOuterIn::update(TailLight& side, LightState /*state*/, unsigned lo
 // ── AnimBrakeHeartbeat ────────────────────────────────────────────────────────
 // Lub-dub double-pulse cardiac rhythm in the brake colour (~800 ms cycle).
 void AnimBrakeHeartbeat::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
+    const uint64_t visualMs = animationTime(nowMs, g_settings.brake_speed);
     CRGB col(g_settings.brake_r, g_settings.brake_g, g_settings.brake_b);
-    unsigned long phase = nowMs % 800UL;
+    unsigned long phase = visualMs % 800UL;
     uint8_t bri;
     if (phase < 80UL) {
         bri = (phase < 40UL) ? (uint8_t)((phase * 255UL) / 40UL)
@@ -610,13 +651,19 @@ void AnimTurnSplitOut::begin(TailLight& side, LightState /*state*/) {
 }
 
 void AnimTurnSplitOut::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
-    unsigned long halfPeriod = g_settings.turn_blink_ms / 2;
-    unsigned long phase      = (nowMs - _startMs) % g_settings.turn_blink_ms;
+    const TurnTiming timing = turnTiming(g_settings);
+    unsigned long halfPeriod = timing.sweep;
+    unsigned long phase      = (nowMs - _startMs) % timing.period();
 
-    if (phase >= halfPeriod) {
+    if (phase >= timing.on()) {
         side.fill(CRGB::Black);
         return;
     }
+    if (phase >= timing.sweep) {
+        side.fill(CRGB(g_settings.turn_r, g_settings.turn_g, g_settings.turn_b));
+        return;
+    }
+
 
     CRGB col(g_settings.turn_r, g_settings.turn_g, g_settings.turn_b);
     side.fill(CRGB::Black);
@@ -644,13 +691,19 @@ void AnimTurnFastChase::begin(TailLight& side, LightState /*state*/) {
 }
 
 void AnimTurnFastChase::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
-    unsigned long halfPeriod = g_settings.turn_blink_ms / 2;
-    unsigned long phase      = (nowMs - _startMs) % g_settings.turn_blink_ms;
+    const TurnTiming timing = turnTiming(g_settings);
+    unsigned long halfPeriod = timing.sweep;
+    unsigned long phase      = (nowMs - _startMs) % timing.period();
 
-    if (phase >= halfPeriod) {
+    if (phase >= timing.on()) {
         side.fill(CRGB::Black);
         return;
     }
+    if (phase >= timing.sweep) {
+        side.fill(CRGB(g_settings.turn_r, g_settings.turn_g, g_settings.turn_b));
+        return;
+    }
+
 
     static constexpr int SWEEPS = 3;
     static constexpr int GRP    = 3;
@@ -682,7 +735,8 @@ void AnimTurnFastChase::update(TailLight& side, LightState /*state*/, unsigned l
 // ── AnimReverseSparkle ────────────────────────────────────────────────────────
 // Scattered bright pixel bursts in the reverse colour over a dim base fill.
 void AnimReverseSparkle::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
-    uint8_t t = (uint8_t)(nowMs / 30UL);
+    const uint64_t visualMs = animationTime(nowMs, g_settings.reverse_speed);
+    uint8_t t = (uint8_t)(visualMs / 30UL);
     for (int seg = 0; seg < NUM_SEGMENTS; seg++) {
         int segCols = (seg == SEG_MAIN) ? MAIN_COLS : STRIP_COLS;
         int segRows = (seg == SEG_MAIN) ? MAIN_ROWS : STRIP_ROWS;
@@ -702,10 +756,11 @@ void AnimReverseSparkle::update(TailLight& side, LightState /*state*/, unsigned 
 // ── AnimReverseScanner ────────────────────────────────────────────────────────
 // Slow KITT-style scanner in the reverse colour (~2.4 s period).
 void AnimReverseScanner::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
+    const uint64_t visualMs = animationTime(nowMs, g_settings.reverse_speed);
     static constexpr int TAIL     = 5;
     static constexpr unsigned long PERIOD = 2400UL;
     int totalPos = (STRIP_COLS - 1) * 2;
-    int pos      = (int)((nowMs % PERIOD) * (unsigned long)totalPos / PERIOD);
+    int pos      = (int)((visualMs % PERIOD) * (unsigned long)totalPos / PERIOD);
     int head     = (pos < STRIP_COLS) ? pos : totalPos - pos;
 
     side.fill(CRGB::Black);
@@ -734,8 +789,9 @@ void AnimReverseScanner::update(TailLight& side, LightState /*state*/, unsigned 
 // ── AnimRunShimmer ────────────────────────────────────────────────────────────
 // Subtle per-column brightness shimmer (70–100 % of brightness_dim).
 void AnimRunShimmer::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
+    const uint64_t visualMs = animationTime(nowMs, g_settings.run_speed);
     uint8_t dim = runningDimPercent();
-    uint8_t t   = (uint8_t)(nowMs / 40UL);
+    uint8_t t   = (uint8_t)(visualMs / 40UL);
     for (int seg = 0; seg < NUM_SEGMENTS; seg++) {
         int segCols = (seg == SEG_MAIN) ? MAIN_COLS : STRIP_COLS;
         int segRows = (seg == SEG_MAIN) ? MAIN_ROWS : STRIP_ROWS;
@@ -755,11 +811,12 @@ void AnimRunShimmer::update(TailLight& side, LightState /*state*/, unsigned long
 // ── AnimRunComet ──────────────────────────────────────────────────────────────
 // Very dim, slow comet wanders back and forth on top strip; dim base elsewhere.
 void AnimRunComet::update(TailLight& side, LightState /*state*/, unsigned long nowMs) {
+    const uint64_t visualMs = animationTime(nowMs, g_settings.run_speed);
     static constexpr int TAIL            = 8;
     static constexpr unsigned long PERIOD = 4000UL;
     uint8_t dim     = runningDimPercent();
     int totalPos    = (STRIP_COLS - 1) * 2;
-    int pos         = (int)((nowMs % PERIOD) * (unsigned long)totalPos / PERIOD);
+    int pos         = (int)((visualMs % PERIOD) * (unsigned long)totalPos / PERIOD);
     int head        = (pos < STRIP_COLS) ? pos : totalPos - pos;
 
     uint8_t baseR = (uint8_t)((g_settings.run_r * dim) / 100u);

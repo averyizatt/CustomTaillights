@@ -17,13 +17,15 @@ public:
     // Call every loop iteration.  Returns true when any input changed.
     bool update();
 
+    // Raw electrical levels in physical OPTO1..OPTO6 order, before polarity
+    // interpretation or debounce. Bit 0 is OPTO1; HIGH sets the bit.
+    uint8_t rawPcbLevels() const;
+
     // ── Atomic packed snapshots (safe to read from a different RTOS task) ───
     // Bit layout per byte:  bit0=brake  bit1=running  bit2=turn  bit3=reverse
     // Written as a single atomic byte store at the end of every update().
     uint8_t driverSnapshot()  const { return _driverSnapshot;  }
     uint8_t passengerSnapshot() const { return _passengerSnapshot; }
-    uint8_t driverRawSnapshot() const { return _driverRawSnapshot; }
-    uint8_t passengerRawSnapshot() const { return _passengerRawSnapshot; }
 
     // ── Left-side debounced accessors ────────────────────────────────────────
     bool driverBrake()   const { return _driverBrake;   }
@@ -69,8 +71,6 @@ private:
     // Bit layout: bit0=brake  bit1=running  bit2=turn  bit3=reverse
     volatile uint8_t _driverSnapshot  = 0;
     volatile uint8_t _passengerSnapshot = 0;
-    volatile uint8_t _driverRawSnapshot  = 0;
-    volatile uint8_t _passengerRawSnapshot = 0;
 
     // Debounce a single channel; returns true if state changed
     bool _debounce(Channel& ch);

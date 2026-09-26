@@ -578,6 +578,49 @@ private:
 // AnimationRegistry
 // Maps a LightState to the correct Animation instance.
 // ---------------------------------------------------------------------------
+// Matrix-specific additions. Timed effects have independent instances per side.
+class AnimRunContour : public Animation {
+public:
+    void update(TailLight& side, LightState state, unsigned long nowMs) override;
+};
+class AnimRunLouvers : public Animation {
+public:
+    void update(TailLight& side, LightState state, unsigned long nowMs) override;
+};
+class AnimBrakeEdgeLock : public Animation {
+public:
+    void begin(TailLight& side, LightState state) override;
+    void update(TailLight& side, LightState state, unsigned long nowMs) override;
+private:
+    unsigned long _startMs = 0;
+};
+class AnimTurnArrowhead : public Animation {
+public:
+    void begin(TailLight& side, LightState state) override;
+    void update(TailLight& side, LightState state, unsigned long nowMs) override;
+private:
+    unsigned long _startMs = 0;
+};
+class AnimTurnThreeBar : public Animation {
+public:
+    void begin(TailLight& side, LightState state) override;
+    void update(TailLight& side, LightState state, unsigned long nowMs) override;
+private:
+    unsigned long _startMs = 0;
+};
+class AnimShowAfterburner : public Animation {
+public:
+    void update(TailLight& side, LightState state, unsigned long nowMs) override;
+};
+class AnimShowTunnel : public Animation {
+public:
+    void update(TailLight& side, LightState state, unsigned long nowMs) override;
+};
+class AnimShowApexWeave : public Animation {
+public:
+    void update(TailLight& side, LightState state, unsigned long nowMs) override;
+};
+
 class AnimationRegistry {
 public:
     // Called once in setup() to create all animation instances.
@@ -600,6 +643,14 @@ public:
     static CustomSlot customSlot()                 { return _customSlot; }
 
 private:
+    static AnimRunContour _runContour;
+    static AnimRunLouvers _runLouvers;
+    static AnimBrakeEdgeLock _brakeEdgeD, _brakeEdgeP;
+    static AnimTurnArrowhead _turnArrowD, _turnArrowP;
+    static AnimTurnThreeBar _turnThreeD, _turnThreeP;
+    static AnimShowAfterburner _showAfterburner;
+    static AnimShowTunnel _showTunnel;
+    static AnimShowApexWeave _showApexWeave;
     static AnimOff        _off;
     static AnimRunning    _running;
     static AnimRunBreathe _runBreathe;

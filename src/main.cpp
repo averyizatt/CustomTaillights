@@ -1,4 +1,4 @@
-﻿// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 // main.cpp
 // ESP32-S3 Custom Foxbody Mustang Taillight Controller
 //
@@ -45,7 +45,10 @@
 #include "status_led.h"
 #include "settings.h"
 #include "wifi_server.h"
+#include "firmware_update.h"
 #include "led_output.h"
+#include "led_transport.h"
+#include "lighting_runtime.h"
 
 // Preview state set by POST /api/preview in wifi_server.cpp.
 // Applied in loop() to let the web UI trigger live light previews.
@@ -62,6 +65,7 @@ extern volatile uint8_t       g_live_passenger_inputs;
 // ── Pixel buffers (owned by main, shared with TailLight objects) ─────────────
 CRGB ledsDriver   [LEDS_PER_SIDE];   // driver side   (US left)
 CRGB ledsPassenger[LEDS_PER_SIDE];   // passenger side (US right)
+LightingRuntime g_lighting;
 
 // ── Subsystem objects ────────────────────────────────────────────────────────
 Inputs    inputs;
@@ -72,7 +76,6 @@ ThermalManager thermal;
 StatusLed      statusLed;
 
 // ── Timing ───────────────────────────────────────────────────────────────────
-static unsigned long lastFrameMs = 0;
 static TurnBlinkDetector driverTurnBlink;
 static TurnBlinkDetector passengerTurnBlink;
 
@@ -214,7 +217,8 @@ static void st_printConfig() {
     Serial.print(F(" rows = "));            Serial.print(MAIN_LEDS);  Serial.println(F(" px"));
     Serial.print(F("  Frame rate     : ~"));
     Serial.print(1000UL / FRAME_INTERVAL_MS); Serial.println(F(" fps"));
-    Serial.println(F("  --- Inputs (active-HIGH via optocouplers) ---"));
+    Serial.printf("  --- Inputs (active-%s via optocouplers) ---\n",
+                  OPT_ACTIVE_LEVEL == LOW ? "LOW" : "HIGH");
     Serial.println(F("  Left opto:"));
     Serial.print(F("    Brake        : GPIO")); Serial.println(PIN_DRIVER_BRAKE);
     Serial.print(F("    Running      : GPIO")); Serial.println(PIN_DRIVER_RUNNING);
@@ -738,6 +742,8 @@ static void inputTaskFn(void* /*param*/) {
 // ---------------------------------------------------------------------------
 void setup() {
     Serial.begin(115200);
+    Serial.printf("[boot] LED outputs: driver GPIO%d, passenger GPIO%d, spare GPIO%d\n",
+                  PIN_LED_DRIVER, PIN_LED_PASSENGER, PIN_LED_AUX);
     // ── Load persisted settings (NVS) ────────────────────────────────────────────
     // Must be called before any code reads g_settings (brightness, WiFi, etc.).
     settings_load();
@@ -751,13 +757,7 @@ void setup() {
     esp_register_shutdown_handler(onSystemShutdown);
 
     // Register LED panels with FastLED
-    FastLED.addLeds<LED_CHIPSET, PIN_LED_DRIVER,  LED_COLOR_ORDER>(ledsDriver,  LEDS_PER_SIDE);
-    FastLED.addLeds<LED_CHIPSET, PIN_LED_PASSENGER, LED_COLOR_ORDER>(ledsPassenger, LEDS_PER_SIDE);
-    // Register the onboard status LED on its own controller with a fixed scale
-    // so it is never dimmed by the global taillight brightness / thermal derating.
-    {
-        FastLED.addLeds<WS2812B, PIN_STATUS_LED, GRB>(&statusLed.pixel, 1);
-    }
+    ledTransportBegin(ledsDriver, ledsPassenger, &statusLed.pixel);
     // Per-side brightness trims are intentionally equal by default. FastLED
     // 3.10 removed the old per-controller setScale() API, so side matching is
     // enforced by shared state/colour rendering rather than controller scale.
@@ -865,8 +865,8 @@ void setup() {
     // setup() from ever reaching the input/render loop.
     if (CAN_ENABLED) {
         Serial.println(F("[boot] init CAN"));
-        canBus.begin();
-        Serial.println(F("[boot] CAN init returned"));
+        const bool canReady = canBus.begin();
+        Serial.printf("[boot] CAN init returned: %s\n", canReady ? "PASS" : "FAIL");
 
         // ── Boot fault reporting over CAN ───────────────────────────────────
         // Faults detected before CAN was up are reported here as one-shots.
@@ -944,6 +944,8 @@ void loop() {
 
     // Process any pending HTTP requests from the web UI.
     wifiServer.handle();
+    if (firmwareUpdateBusy()) { delay(1); return; }
+    nowMs = millis();
 
     // ── Thermal management ──────────────────────────────────────────────────
     thermal.tick(nowMs);
@@ -954,7 +956,7 @@ void loop() {
         static uint8_t prevThermalFault = FAULT_NONE;
         uint8_t newFault = FAULT_NONE;
         float   t        = thermal.tempC();
-        if (t >= TEMP_SHUTDOWN_C)      newFault = FAULT_THERMAL_CRITICAL;
+        if (t >= TEMP_SHUTDOWN_C) newFault = FAULT_THERMAL_CRITICAL;
         else if (t >= TEMP_DERATE_START_C) newFault = FAULT_THERMAL_WARN;
 
         if (CAN_ENABLED && newFault != prevThermalFault) {
@@ -971,24 +973,18 @@ void loop() {
     }
 
     // Determine target brightness: prefer CAN override, else default.
-    // Always pass through thermal derating — it is never bypassed, even
-    // by a CAN command, so safety-critical lights always remain visible.
-    const bool canBrightnessChanged = CAN_ENABLED && canBus.brightnessChanged();
-    if (canBrightnessChanged) g_settings.brightness = canBus.brightness();
-    uint8_t targetBrightness = canBrightnessChanged
-                             ? canBus.brightness()
+    // Always apply thermal brightness protection, including CAN overrides.
+    uint8_t targetBrightness = CAN_ENABLED
+                             ? canBus.requestedBrightness(g_settings.brightness)
                              : g_settings.brightness;
     uint8_t safeBrightness = thermal.applyBrightness(targetBrightness);
     FastLED.setBrightness(safeBrightness);
-    if (canBrightnessChanged) canBus.clearBrightnessChanged();
 
     // Input is polled by the input task on Core 0.  Read the atomic snapshots
     // (single-byte loads — guaranteed atomic on Xtensa LX7) so we always see
     // a coherent set of flags from a single debounce cycle.
     uint8_t ds = inputs.driverSnapshot();
     uint8_t ps = inputs.passengerSnapshot();
-    const uint8_t drs = inputs.driverRawSnapshot();
-    const uint8_t prs = inputs.passengerRawSnapshot();
 
     g_live_driver_inputs = ds;
     g_live_passenger_inputs = ps;
@@ -999,11 +995,11 @@ void loop() {
 
     const bool driverBrake = ds & 0x01;
     const bool driverRunning = ds & 0x02;
-    const bool driverTurn = ds & 0x04;
+    const bool driverTurn = g_live_driver_inputs & 0x04;
     const bool driverReverse = ds & 0x08;
     const bool passengerBrake = ps & 0x01;
     const bool passengerRunning = ps & 0x02;
-    const bool passengerTurn = ps & 0x04;
+    const bool passengerTurn = g_live_passenger_inputs & 0x04;
     const bool passengerReverse = ps & 0x08;
 
     // Brake, running, and reverse are vehicle-level steady signals. If either
@@ -1018,14 +1014,18 @@ void loop() {
     // HAZARD until timing-valid edges are observed.
     const TurnBlinkSnapshot driverBlink = driverTurnBlink.update(driverTurn, nowMs);
     const TurnBlinkSnapshot passengerBlink = passengerTurnBlink.update(passengerTurn, nowMs);
-    const bool hazardBlinking = validHazardBlink(driverBlink, passengerBlink);
+    const bool driverTurnRequested = requestedTurn(driverBlink.blinking, g_soft_inputs_enabled, g_soft_driver_mask);
+    const bool passengerTurnRequested = requestedTurn(passengerBlink.blinking, g_soft_inputs_enabled, g_soft_passenger_mask);
+    const bool softwareHazard = g_soft_inputs_enabled
+                               && (g_soft_driver_mask & g_soft_passenger_mask & 0x04);
+    const bool hazardBlinking = validHazardBlink(driverBlink, passengerBlink) || softwareHazard;
 
     LightState driverState = resolveSideState(
-        brakeActive, runningActive, driverBlink.blinking, reverseActive,
+        brakeActive, runningActive, driverTurnRequested, reverseActive,
         hazardBlinking
     );
     LightState passengerState = resolveSideState(
-        brakeActive, runningActive, passengerBlink.blinking, reverseActive,
+        brakeActive, runningActive, passengerTurnRequested, reverseActive,
         hazardBlinking
     );
 
@@ -1034,60 +1034,6 @@ void loop() {
     if (g_settings.rest_mode && ds == 0 && ps == 0) {
         driverState = LightState::RUNNING;
         passengerState = LightState::RUNNING;
-    }
-
-    if (SERIAL_INPUT_DEBUG) {
-        static uint8_t lastDs = 0xFF;
-        static uint8_t lastPs = 0xFF;
-        static uint8_t lastDrs = 0xFF;
-        static uint8_t lastPrs = 0xFF;
-        static bool lastDriverBlink = false;
-        static bool lastPassengerBlink = false;
-        static bool lastHazardBlinking = false;
-        static LightState lastDriverState = LightState::CUSTOM;
-        static LightState lastPassengerState = LightState::CUSTOM;
-        static uint8_t lastSafeBrightness = 0xFF;
-        static unsigned long lastLogMs = 0;
-
-        const bool changed = ds != lastDs || ps != lastPs || drs != lastDrs || prs != lastPrs
-                          || driverBlink.blinking != lastDriverBlink
-                          || passengerBlink.blinking != lastPassengerBlink
-                          || hazardBlinking != lastHazardBlinking
-                          || driverState != lastDriverState
-                          || passengerState != lastPassengerState
-                          || safeBrightness != lastSafeBrightness;
-        if (changed || (nowMs - lastLogMs) >= 1000UL) {
-            const uint16_t driverFinalBrightness =
-                ((uint16_t)safeBrightness * BRIGHTNESS_SCALE_DRIVER) / 255;
-            const uint16_t passengerFinalBrightness =
-                ((uint16_t)safeBrightness * BRIGHTNESS_SCALE_PASSENGER) / 255;
-            Serial.printf("[inputs] raw D=%02X P=%02X debounced D=%02X P=%02X "
-                          "steady brake=%u run=%u rev=%u blink D=%u P=%u hazard=%u state D=%s P=%s "
-                          "brightness D=%u P=%u global=%u\n",
-                          drs, prs, ds, ps,
-                          brakeActive ? 1 : 0,
-                          runningActive ? 1 : 0,
-                          reverseActive ? 1 : 0,
-                          driverBlink.blinking ? 1 : 0,
-                          passengerBlink.blinking ? 1 : 0,
-                          hazardBlinking ? 1 : 0,
-                          lightStateName(driverState),
-                          lightStateName(passengerState),
-                          driverFinalBrightness,
-                          passengerFinalBrightness,
-                          safeBrightness);
-            lastDs = ds;
-            lastPs = ps;
-            lastDrs = drs;
-            lastPrs = prs;
-            lastDriverBlink = driverBlink.blinking;
-            lastPassengerBlink = passengerBlink.blinking;
-            lastHazardBlinking = hazardBlinking;
-            lastDriverState = driverState;
-            lastPassengerState = passengerState;
-            lastSafeBrightness = safeBrightness;
-            lastLogMs = nowMs;
-        }
     }
 
     // ── State override priority (highest → lowest) ───────────────────────────
@@ -1139,9 +1085,10 @@ void loop() {
     // colors and animations from the web UI.  Applied after show mode so the
     // preview controls always respond.
     // Safety: brake and reverse physical signals are never suppressed.
-    if (nowMs < g_preview_until_ms) {
-        if (!brakeActive && !reverseActive) driverState    = g_preview_driver;
-        if (!brakeActive && !reverseActive) passengerState = g_preview_passenger;
+    const bool previewBlocked = physicalPreviewBlocked(g_live_driver_inputs, g_live_passenger_inputs);
+    if (nowMs < g_preview_until_ms && !previewBlocked) {
+        driverState = g_preview_driver;
+        passengerState = g_preview_passenger;
     }
 
     // Optional rest-mode test pulse from the web UI (brief RUNNING/OFF pulse).
@@ -1149,13 +1096,14 @@ void loop() {
         const LightState pulseState = ((nowMs / REST_PULSE_HALF_CYCLE_MS) & 1UL)
                                       ? LightState::RUNNING
                                       : LightState::OFF;
-        if (!brakeActive && !reverseActive) driverState    = pulseState;
-        if (!brakeActive && !reverseActive) passengerState = pulseState;
+        if (!previewBlocked) driverState = passengerState = pulseState;
     }
 
-    // Broadcast the resolved output states, including remote overrides.
-    // Received commands take effect on the next loop iteration.
-    if (CAN_ENABLED) canBus.tick(driverState, passengerState, inputs, thermal);
+    // Broadcast the effective states and thermally limited brightness used below.
+    // Commands received here take effect on the next loop iteration.
+    if (CAN_ENABLED) {
+        canBus.tick(driverState, passengerState, inputs, thermal, safeBrightness);
+    }
 
     // ── Status LED ──────────────────────────────────────────────────────────
     // Compute desired state from current system health (highest priority wins).
@@ -1174,19 +1122,29 @@ void loop() {
         statusLed.setState(desired);
     }
 
-    // Throttle animation updates to settings frame time, but never above 50 FPS.
+    // Shared DMA sends both 380-pixel lamps sequentially; cap at 40 FPS.
     const unsigned long frameIntervalMs =
         (g_settings.frame_ms < LED_SHOW_MIN_INTERVAL_MS)
             ? LED_SHOW_MIN_INTERVAL_MS
             : g_settings.frame_ms;
-    if (nowMs - lastFrameMs >= frameIntervalMs) {
-        lastFrameMs = nowMs;
+    if (ledOutputReady(frameIntervalMs)) {
+        nowMs = millis();
 
         driverPanel.update(driverState, nowMs);
         passengerPanel.update(passengerState, nowMs);
 
+        g_lighting.driver = driverState;
+        g_lighting.passenger = passengerState;
+        g_lighting.driverLit = g_lighting.passengerLit = 0;
+        for (int i = 0; i < LEDS_PER_SIDE; ++i) {
+            if (ledsDriver[i].r || ledsDriver[i].g || ledsDriver[i].b) ++g_lighting.driverLit;
+            if (ledsPassenger[i].r || ledsPassenger[i].g || ledsPassenger[i].b) ++g_lighting.passengerLit;
+        }
+
         // Tick the status LED and push all controllers together in one show()
         statusLed.tick(nowMs);
         ledOutputShow();
+        ++g_lighting.frames;
+        g_lighting.lastFrameMs = millis();
     }
 }

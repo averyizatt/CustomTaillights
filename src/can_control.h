@@ -1,7 +1,7 @@
 #pragma once
 
 #include "settings.h"
-#include "../../../shared/can_contract/include/can_contract/can_protocol.h"
+#include <can_contract/can_protocol.h>
 
 // Live settings only: remote commands do not write NVS.
 inline bool applyCanMode(Settings& settings, const can_protocol::CanFrame& frame) {

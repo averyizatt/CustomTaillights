@@ -1,13 +1,14 @@
 #pragma once
 
 #include <stdint.h>
-#include "../../../shared/can_contract/include/can_contract/can_protocol.h"
+#include <can_contract/can_protocol.h>
 
 // ===========================================================================
 // can_protocol.h  —  Foxbody Taillight Controller CAN Bus Protocol Reference
 // ===========================================================================
 //
-// Drop this header into any project that needs to talk to the taillight ECU.
+// Wire layout follows include/can_contract/can_protocol.h from CCM unchanged.
+// This file documents the taillight behavior and custom animation IDs.
 // All frame IDs are 11-bit standard frames at 500 kbit/s.
 //
 // ┌─────────────────────────────────────────────────────────────────────────┐
@@ -26,11 +27,11 @@
 //    0   left  LightState    0=OFF 1=RUNNING 2=BRAKE 3=TURN 4=REVERSE
 //                            5=BRAKE_TURN 6=HAZARD 7=CUSTOM
 //    1   right LightState    same encoding
-//    2   left  raw flags     bit0=brake  bit1=running  bit2=turn  bit3=rev
-//    3   right raw flags     same bit order
-//    4   brightness          0–255 (current FastLED global brightness)
-//    5   die temp °C         0–255 (ESP32-S3 on-die sensor, clamped)
-//    6   thermal derate      0=none … 255=maximum derating applied
+//    2   driver inputs      brake/running/turn/reverse bits
+//    3   passenger inputs   brake/running/turn/reverse bits
+//    4   brightness         applied global brightness (0-255)
+//    5   die temperature    raw Celsius, clamped to 0-255
+//    6   thermal derate     raw amount (0-255)
 //
 // ===========================================================================
 // 0x101 — COMMAND FRAME  (DLC varies, RX)
@@ -40,6 +41,7 @@
 //
 //  ── Cmd 0x01 : Set Brightness ──────────────────────────────────────────────
 //  DLC = 2
+//  Persists until another brightness command or restart; always thermally limited.
 //  Byte 1 : target brightness  (0–255)
 //
 //  Example (set to 50 % brightness):
