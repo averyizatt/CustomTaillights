@@ -26,7 +26,9 @@
 #include <Arduino.h>
 #include <FastLED.h>
 #include <Preferences.h>
+#ifndef TAILLIGHT_HEADLESS
 #include <WiFi.h>
+#endif
 #include <esp_idf_version.h>
 #include <esp_system.h>
 #include <esp_task_wdt.h>
