@@ -2,6 +2,8 @@
 // completion from the lighting loop.
 #include "canbus.h"
 #include "can_control.h"
+#include "can_settings.h"
+#include <cstring>
 
 static constexpr uint8_t CMD_SET_BRIGHTNESS = 0x01;
 static constexpr uint8_t CMD_ANIM_OVERRIDE  = 0x02;
@@ -173,7 +175,75 @@ void CANBus::tick(LightState driverState, LightState passengerState,
         _lastBroadcastMs = nowMs;
         _sendState(driverState, passengerState, inputs, thermal, appliedBrightness);
     }
+#if TAILLIGHT_CAN_SETTINGS
+    if (nowMs - _lastStatusMs >= can_protocol::TAILLIGHT_STATUS_TX_MS) {
+        _lastStatusMs = nowMs;
+        _sendStatus(nowMs);
+    }
+    _drainQueue();
+#endif
 }
+
+#if TAILLIGHT_CAN_SETTINGS
+void CANBus::_enqueue(const can_protocol::CanFrame& packed) {
+    if (!_online) return;
+    if (_queueCount == TX_QUEUE_SIZE) {  // Drop the oldest; status repeats and reports can be re-requested.
+        _queueHead = (_queueHead + 1) % TX_QUEUE_SIZE;
+        --_queueCount;
+    }
+    struct can_frame& frame = _queue[(_queueHead + _queueCount) % TX_QUEUE_SIZE];
+    frame = {};
+    frame.can_id = packed.id;
+    frame.can_dlc = packed.dlc;
+    for (uint8_t i = 0; i < packed.dlc; ++i) frame.data[i] = packed.data[i];
+    ++_queueCount;
+}
+
+void CANBus::_drainQueue() {
+    if (!_queueCount || _txPending || _busOff) return;
+    _sendFrame(_queue[_queueHead]);
+    if (_txPending) {  // Accepted into the TX slot; otherwise retry after backoff.
+        _queueHead = (_queueHead + 1) % TX_QUEUE_SIZE;
+        --_queueCount;
+    }
+}
+
+void CANBus::_acknowledge(uint8_t command, uint8_t status, uint8_t subject, uint16_t value) {
+    _enqueue(can_protocol::packTaillightAck(command, status, subject, value, _revision));
+}
+
+void CANBus::_sendStatus(unsigned long nowMs) {
+    namespace flag = can_protocol::taillight_status_flag;
+    uint8_t flags = 0;
+    if (settings_pending()) flags |= flag::UNSAVED;
+    if (g_settings.show_mode) flags |= flag::SHOW;
+    if (_demoMode) flags |= flag::DEMO;
+    if (_hasCustomAnim) flags |= flag::CUSTOM;
+    if (_hasOverride) flags |= flag::OVERRIDE;
+    const unsigned long phase = (nowMs - _animationStartMs) / 16UL;
+    _enqueue(can_protocol::packTaillightStatus(_revision, flags, g_settings.show_anim,
+                                               can_settings::profileSlots(),
+                                               static_cast<uint16_t>(phase > 0xFFFF ? 0xFFFF : phase)));
+}
+
+void CANBus::_sendReport() {
+    const uint8_t flags = settings_pending() ? can_protocol::taillight_status_flag::UNSAVED : 0;
+    for (uint8_t key = 1; key <= can_protocol::taillight_setting::COUNT; ++key) {
+        _enqueue(can_protocol::packTaillightSettingReport(key, can_settings::get(key), _revision, flags));
+    }
+    for (uint8_t which = 0; which < can_protocol::taillight_color::COUNT; ++which) {
+        uint8_t red = 0, green = 0, blue = 0;
+        can_settings::color(which, red, green, blue);
+        _enqueue(can_protocol::packTaillightColorReport(which, red, green, blue, _revision, flags));
+    }
+    // Text in six-character chunks; the last one is NUL-padded so it marks the end.
+    const size_t length = strnlen(g_settings.show_text, sizeof(g_settings.show_text));
+    for (size_t offset = 0; offset <= length; offset += 6) {
+        _enqueue(can_protocol::packTaillightTextReport(static_cast<uint8_t>(offset), g_settings.show_text + offset));
+        if (offset + 6 > length && length % 6 != 0) break;
+    }
+}
+#endif
 
 void CANBus::_sendState(LightState driverState, LightState passengerState,
                         const Inputs& inputs, const ThermalManager& thermal,
@@ -204,6 +274,11 @@ void CANBus::reportFault(uint8_t code, uint8_t severity, uint8_t data0, uint8_t 
 
 void CANBus::_processFrame(const struct can_frame& frame) {
     if (frame.can_id != CAN_ID_COMMAND || frame.can_dlc < 1 || frame.can_dlc > 8) return;
+    namespace ack = can_protocol::config_ack_status;
+    // Result of this command, acknowledged on 0x103 by the PCB build.
+    uint8_t ackStatus = ack::OK;
+    uint8_t ackSubject = frame.can_dlc > 1 ? frame.data[1] : 0;
+    uint16_t ackValue = frame.can_dlc > 2 ? frame.data[2] : 0;
 
     switch (frame.data[0]) {
 
@@ -212,7 +287,10 @@ void CANBus::_processFrame(const struct can_frame& frame) {
             command.id = frame.can_id;
             command.dlc = frame.can_dlc;
             for (uint8_t i = 0; i < frame.can_dlc && i < 8; ++i) command.data[i] = frame.data[i];
-            if (!applyCanMode(g_settings, command)) break;
+            if (!applyCanMode(g_settings, command)) {
+                ackStatus = frame.can_dlc != 3 ? ack::INVALID_LENGTH : ack::UNSUPPORTED_COMMAND;
+                break;
+            }
             _hasOverride = false;
             _hasCustomAnim = false;
             AnimationRegistry::setCustomSlot(AnimationRegistry::CustomSlot::NONE);
@@ -226,7 +304,7 @@ void CANBus::_processFrame(const struct can_frame& frame) {
                 _brightness.set(frame.data[1]);
                 Serial.print(F("[CAN] brightness -> "));
                 Serial.println(frame.data[1]);
-            }
+            } else ackStatus = ack::INVALID_LENGTH;
             break;
 
         case CMD_ANIM_OVERRIDE:
@@ -234,6 +312,7 @@ void CANBus::_processFrame(const struct can_frame& frame) {
                 // Clamp incoming values to valid LightState range (0-6)
                 uint8_t l = frame.data[1];
                 uint8_t r = frame.data[2];
+                if (l > 6 || r > 6) ackStatus = ack::VALUE_CLAMPED;
                 if (l > 6) l = 0;
                 if (r > 6) r = 0;
                 _overrideDriver  = static_cast<LightState>(l);
@@ -243,7 +322,7 @@ void CANBus::_processFrame(const struct can_frame& frame) {
                 Serial.print(l);
                 Serial.print(F(" passenger="));
                 Serial.println(r);
-            }
+            } else ackStatus = ack::INVALID_LENGTH;
             break;
 
         case CMD_CLEAR_OVERRIDE:
@@ -309,14 +388,64 @@ void CANBus::_processFrame(const struct can_frame& frame) {
 
                     default:
                         Serial.printf("[CAN] unknown custom anim id 0x%02X\n", animId);
+                        ackStatus = ack::UNSUPPORTED_COMMAND;
                         break;
                 }
-            }
+            } else ackStatus = ack::INVALID_LENGTH;
             break;
+
+#if TAILLIGHT_CAN_SETTINGS
+        case can_protocol::taillight_command::SET_SETTING: {
+            if (frame.can_dlc != 4) { ackStatus = ack::INVALID_LENGTH; break; }
+            const uint16_t requested = can_protocol::decodeU16BE(frame.data[2], frame.data[3]);
+            bool clamped = false;
+            if (!can_settings::set(frame.data[1], requested, ackValue, clamped)) {
+                ackStatus = ack::UNSUPPORTED_COMMAND;
+                break;
+            }
+            if (clamped) ackStatus = ack::VALUE_CLAMPED;
+            ++_revision;
+            break;
+        }
+
+        case can_protocol::taillight_command::SET_COLOR:
+            if (frame.can_dlc != 5) { ackStatus = ack::INVALID_LENGTH; break; }
+            if (!can_settings::setColor(frame.data[1], frame.data[2], frame.data[3], frame.data[4])) {
+                ackStatus = ack::UNSUPPORTED_COMMAND;
+                break;
+            }
+            ackValue = static_cast<uint16_t>(frame.data[2]) << 8 | frame.data[3];
+            ++_revision;
+            break;
+
+        case can_protocol::taillight_command::SET_SHOW_TEXT:
+            if (frame.can_dlc < 2) { ackStatus = ack::INVALID_LENGTH; break; }
+            if (!can_settings::setTextChunk(frame.data[1], frame.data + 2, frame.can_dlc - 2)) {
+                ackStatus = ack::VALUE_CLAMPED;
+                break;
+            }
+            ++_revision;
+            break;
+
+        case can_protocol::taillight_command::SETTINGS_ACTION: {
+            if (frame.can_dlc < 2 || frame.can_dlc > 3) { ackStatus = ack::INVALID_LENGTH; break; }
+            const uint8_t kind = frame.data[1];
+            ackStatus = can_settings::action(kind, frame.can_dlc == 3 ? frame.data[2] : 0);
+            if (ackStatus == ack::OK && kind == can_protocol::taillight_action::REPORT) _sendReport();
+            else if (ackStatus == ack::OK && kind != can_protocol::taillight_action::SAVE) ++_revision;
+            break;
+        }
+#endif
 
         default:
             Serial.print(F("[CAN] unknown cmd 0x"));
             Serial.println(frame.data[0], HEX);
+            ackStatus = ack::UNSUPPORTED_COMMAND;
             break;
     }
+#if TAILLIGHT_CAN_SETTINGS
+    _acknowledge(frame.data[0], ackStatus, ackSubject, ackValue);
+#else
+    (void)ackStatus; (void)ackSubject; (void)ackValue;
+#endif
 }

@@ -803,9 +803,15 @@ void setup() {
     // Bring WiFi up before any optional startup animations, CAN probing, or
     // watchdog setup. That keeps the controller reachable even if a later
     // nonessential subsystem blocks on the bench.
+#if TAILLIGHT_WIFI_ENABLED
     Serial.println(F("[boot] init wifi"));
     wifiServer.begin();
     Serial.println(F("[boot] wifi ready"));
+#else
+    // PCB build: settings arrive over CAN from the dashboard; keep the radio off.
+    WiFi.mode(WIFI_OFF);
+    Serial.println(F("[boot] wifi disabled (CAN settings)"));
+#endif
 
     // ── Bench test cycle entry check ─────────────────────────────────────────
     // Hold only PIN_DRIVER_RUNNING (GPIO 6) active while powering on to run
@@ -942,8 +948,10 @@ void loop() {
     // WDT_TIMEOUT_S seconds the MCU performs a clean panic reset.
     esp_task_wdt_reset();
 
+#if TAILLIGHT_WIFI_ENABLED
     // Process any pending HTTP requests from the web UI.
     wifiServer.handle();
+#endif
     if (firmwareUpdateBusy()) { delay(1); return; }
     nowMs = millis();
 
@@ -1102,6 +1110,7 @@ void loop() {
     // Broadcast the effective states and thermally limited brightness used below.
     // Commands received here take effect on the next loop iteration.
     if (CAN_ENABLED) {
+        canBus.setAnimationStart(driverPanel.animationStartMs());
         canBus.tick(driverState, passengerState, inputs, thermal, safeBrightness);
     }
 
