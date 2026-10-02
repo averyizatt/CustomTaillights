@@ -27,6 +27,7 @@ void TailLight::update(LightState state, unsigned long nowMs) {
         // begin() records millis(). The caller's frame timestamp may predate
         // it after HTTP/CAN work; subtracting that older time would underflow.
         nowMs = millis();
+        _animationStartMs = nowMs;
     }
 
     if (_currentAnim) {

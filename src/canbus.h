@@ -70,6 +70,10 @@ public:
     void reportFault(uint8_t code, uint8_t severity,
                      uint8_t data0 = 0, uint8_t data1 = 0);
 
+    // When the driver-side animation began (millis). Reported as the animation
+    // phase in the 0x103 status so a dashboard mirror can stay in step.
+    void setAnimationStart(unsigned long startMs) { _animationStartMs = startMs; }
+
 private:
     MCP2515 _mcp{PIN_CAN_CS};
 
@@ -97,6 +101,21 @@ private:
 
     // Brightness
     taillight_can::BrightnessOverride _brightness;
+
+    // Settings extension (can_protocol.h extension 3, PCB build): acknowledgements,
+    // settings reports and the 500 ms status share ID 0x103 through a small queue
+    // drained one frame per free TX slot, so the 0x100 broadcast keeps its cadence.
+    static constexpr uint8_t TX_QUEUE_SIZE = 48;
+    struct can_frame _queue[TX_QUEUE_SIZE];
+    uint8_t _queueHead = 0, _queueCount = 0;
+    uint8_t _revision = 0;           // Bumped whenever a setting changes.
+    unsigned long _lastStatusMs = 0;
+    unsigned long _animationStartMs = 0;
+    void _enqueue(const can_protocol::CanFrame& frame);
+    void _drainQueue();
+    void _acknowledge(uint8_t command, uint8_t status, uint8_t subject, uint16_t value);
+    void _sendStatus(unsigned long nowMs);
+    void _sendReport();
 
     // Connection management
     bool          _spiStarted    = false;  // SPI.begin() called once; never repeated

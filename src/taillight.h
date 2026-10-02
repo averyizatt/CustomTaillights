@@ -28,6 +28,9 @@ public:
     // ── Helpers used by Animation subclasses ────────────────────────────────
     bool isDriver() const { return _isDriver; }
 
+    // millis() when the current animation began (state or selection change).
+    unsigned long animationStartMs() const { return _animationStartMs; }
+
     // Fill the entire taillight (all 380 pixels) with one colour
     void fill(CRGB colour);
 
@@ -54,6 +57,7 @@ private:
 
     LightState  _currentState = LightState::OFF;
     Animation*  _currentAnim  = nullptr;
+    unsigned long _animationStartMs = 0;
 
     // Translate segment + (row, col) to an absolute linear LED index.
     //

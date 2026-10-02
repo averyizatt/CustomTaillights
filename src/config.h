@@ -237,6 +237,25 @@ static constexpr int   TEMP_SHUTDOWN_C         =   85;  // above this: BRIGHTNES
 #endif
 static constexpr bool CAN_ENABLED = CCM_TAILLIGHT_CAN_ENABLED != 0;
 
+// PCB build: the dashboard configures the lights over CAN (can_protocol.h
+// extension 3: settings, colors, profiles, acknowledgements and 0x103 status),
+// and the WiFi access point / settings page / OTA are off. Override with
+// -DTAILLIGHT_WIFI_ENABLED=1 to bring the web page back for bench work.
+#if defined(CUSTOM_TAILLIGHTS_PCB)
+#ifndef TAILLIGHT_WIFI_ENABLED
+#define TAILLIGHT_WIFI_ENABLED 0
+#endif
+#ifndef TAILLIGHT_CAN_SETTINGS
+#define TAILLIGHT_CAN_SETTINGS 1
+#endif
+#endif
+#ifndef TAILLIGHT_WIFI_ENABLED
+#define TAILLIGHT_WIFI_ENABLED 1
+#endif
+#ifndef TAILLIGHT_CAN_SETTINGS
+#define TAILLIGHT_CAN_SETTINGS 0
+#endif
+
 // The common blue MCP2515 breakout connects to a custom SPI bus so it does
 // not conflict with any other peripheral.
 //
