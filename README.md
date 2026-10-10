@@ -100,13 +100,37 @@ Priority (highest → lowest): **HAZARD > BRAKE_TURN > BRAKE > TURN > REVERSE > 
 CAN animation overrides (commands `0x02` and `0x04`) are **never** allowed to suppress an active physical brake or reverse signal. If the optocoupler on either side detects brake or reverse, that side's state is always resolved from hardware — no external command can override it.
 
 ### Hardware Task Watchdog
-Both the render task (Core 1 / `loop()`) and the input polling task (Core 0) are subscribed to the hardware WDT with a **3-second** timeout. If either task hangs for any reason the MCU performs a clean panic reset and restarts from `setup()`. The crash reason is logged to NVS flash so it survives the reset and can be reported over CAN on the next boot.
+Both the render task (Core 1 / `loop()`) and the input polling task (Core 0) are subscribed to the hardware WDT with a **3-second** timeout (PCB builds: the render task from the start of `setup()`, with 8 seconds while booting). If either task hangs for any reason the MCU performs a clean panic reset and restarts from `setup()`. The crash reason is logged to NVS flash so it survives the reset and can be reported over CAN on the next boot.
+
+### Recovery without the reset button (PCB builds)
+A WS2812 lamp keeps showing its last frame for as long as it has power, so a controller
+that stops sending leaves the lamps frozen on whatever was showing: a frame of the
+startup animation, or the brake lights. These layers bring it back by itself. They are
+active in the builds that run with Wi-Fi off (`esp32-s3-pcb`, `esp32-s3-pcb-headless`).
+
+| Layer | Catches | Action |
+|---|---|---|
+| Task watchdog from the first lines of `setup()` (8 s while booting, then 3 s) | A hang in the crank holdoff, the startup animation or CAN start-up, which used to have no watchdog at all | Panic reset |
+| Output guard (`output_guard.h`) | The LED transport refusing frames while everything else runs: a transfer that never completes blocks every later frame, and every other watchdog stays satisfied | Full reset after 0.5 s and 8 refused frames |
+| RTC hardware watchdog (`hw_watchdog.c`) | Anything else, including a processor that is not running code. It is fed only by frames that reached **both** lamps | System reset after 5 s without one; if that does not help, a reset that also restarts the RTC, as the reset button does |
+| Fast return (`boot_guard.h`) | The wait after a fault | A restart after a watchdog, crash or output stall skips the crank holdoff and the startup animation: the lights are back in a fraction of a second |
+| Safe mode | A supply that cannot carry the lights (reset loop) | After three fault restarts in a row the LED current limit drops from 12 A to 4 A until the lights have run normally for 20 s |
+| Current ramp (`power_ramp.h`) | The load step when every LED comes on at once (brake, startup animation) | The estimated current may rise by 4 A per frame: the lights are on in the first frame and at full brightness one or two frames (25-50 ms) later |
+
+Brake or reverse also ends the startup animation at once, and it never starts while
+either is on.
+
+The count of fault restarts in a row lives in RTC memory, so it survives every reset
+except loss of power. The serial log prints the plan for each boot
+(`Boot plan - fault restarts in a row: ...`) and the fault log gains a `LED output`
+count. Nothing changes on the CAN bus: a reset by the output guard or the hardware
+watchdog is reported with the existing watchdog fault code `0x05`.
 
 ### Dual-core architecture
 Input polling runs at 1 ms on Core 0, completely independent of LED render time on Core 1. Inputs are exchanged between cores via atomic single-byte snapshots — no mutex or critical section needed.
 
 ### Crank holdoff
-After every boot the controller waits **1.5 seconds** with LEDs blank before proceeding. If a voltage sag during engine cranking resets the ESP32, it simply restarts the holdoff. Set `CRANK_HOLDOFF_MS` in `config.h` to adjust (or `0` to disable). The onboard status LED blinks blue during this window.
+After a power-on or brownout the controller waits **1.5 seconds** with LEDs blank before proceeding (a restart after a watchdog or crash skips it). If a voltage sag during engine cranking resets the ESP32, it simply restarts the holdoff. Set `CRANK_HOLDOFF_MS` in `config.h` to adjust (or `0` to disable). The onboard status LED blinks blue during this window.
 
 ### BLE disabled
 BLE is disabled and de-initialized at the start of `setup()` to free heap and remove Bluetooth RF stack timing overhead. WiFi remains available for the web settings UI.
@@ -192,16 +216,20 @@ Power on
   │
   ├─ WiFi / BLE disabled
   ├─ Boot reason read; WDT/panic/brownout count written to NVS
+  ├─ Boot plan chosen from the reason and the fault restarts in a row
+  ├─ Task watchdog armed (PCB builds, 8 s while booting)
   ├─ Shutdown handler registered (blanks LEDs before any reset)
   ├─ FastLED initialised, LEDs blanked
+  ├─ RTC hardware watchdog armed (PCB builds, fed by delivered frames)
   │
-  ├─ Crank holdoff (1500 ms, status LED blinks blue)
+  ├─ Crank holdoff (1500 ms, status LED blinks blue) — power-on and brownout only
   │    └─ If brownout occurs during crank → reset → holdoff restarts
   │
   ├─ [Bench mode only — hold driver running line at power-on]
   │    └─ Full startup self-test (segment ID, pixel chaser, colour verify) ~5 s
   │
-  ├─ Startup animation (~900 ms sequential red sweep)
+  ├─ Startup animation (~900 ms sequential red sweep) — power-on only,
+  │    ended at once by brake or reverse
   │
   ├─ [Bench mode only]
   │    └─ Test cycle — cycles through all light states
@@ -209,7 +237,7 @@ Power on
   ├─ Taillight panels initialised
   ├─ CAN bus online — boot faults broadcast
   ├─ Thermal manager started
-  ├─ Hardware WDT armed (3 s timeout, both cores)
+  ├─ Task watchdog tightened to 3 s, both cores
   ├─ Input task launched on Core 0 (1 ms poll, priority 4)
   │
   └─ Main loop running (Core 1)

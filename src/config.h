@@ -336,3 +336,26 @@ static constexpr unsigned long FAULT_DISPLAY_MS = 10000;
 // engine cranking and the ESP32 browns out, it simply resets and restarts
 // the holdoff.  Set to 0 to disable.
 static constexpr unsigned long CRANK_HOLDOFF_MS = 1500;
+
+// ── Recovery safeguards ──────────────────────────────────────────────────────
+// For the builds that run in the car with Wi-Fi off (PCB and PCB headless): the
+// controller must get itself going again without anyone pressing reset.
+// See boot_guard.h, output_guard.h, hw_watchdog.h and power_ramp.h.
+#ifndef TAILLIGHT_OUTPUT_GUARD
+#define TAILLIGHT_OUTPUT_GUARD (!TAILLIGHT_WIFI_ENABLED)
+#endif
+// The task watchdog is armed from the first lines of setup() with this longer
+// allowance, then tightened to WDT_TIMEOUT_S once the main loop starts.
+static constexpr uint32_t WDT_BOOT_TIMEOUT_S = 8;
+// RTC watchdog: full chip reset when no frame has reached both lamps for this long.
+static constexpr uint32_t OUTPUT_WDT_TIMEOUT_MS = 5000;
+// Frames attempted and refused for this long, at least this many times: reset at once.
+static constexpr unsigned long OUTPUT_STALL_RESET_MS = 500;
+static constexpr uint32_t OUTPUT_STALL_MIN_FAILURES = 8;
+// Normal running for this long clears the count of fault restarts in a row.
+static constexpr unsigned long STABLE_RUN_MS = 20000;
+// After three fault restarts in a row: a current limit a weak supply can carry.
+static constexpr uint32_t LED_SAFE_MODE_BUDGET_MA = 4000;
+// Largest rise in estimated LED current from one frame to the next.
+static constexpr uint32_t LED_CURRENT_STEP_MA = 4000;
+static constexpr uint32_t LED_SAFE_MODE_STEP_MA = 1500;

@@ -51,6 +51,11 @@
 #include "led_output.h"
 #include "led_transport.h"
 #include "lighting_runtime.h"
+#include "boot_guard.h"
+#include "output_guard.h"
+#include "power_ramp.h"
+#include "hw_watchdog.h"
+#include <esp_attr.h>
 
 // Preview state set by POST /api/preview in wifi_server.cpp.
 // Applied in loop() to let the web UI trigger live light previews.
@@ -80,6 +85,86 @@ StatusLed      statusLed;
 // ── Timing ───────────────────────────────────────────────────────────────────
 static TurnBlinkDetector driverTurnBlink;
 static TurnBlinkDetector passengerTurnBlink;
+
+// ── Recovery safeguards ──────────────────────────────────────────────────────
+// Kept in RTC memory: survives every reset except loss of power.
+static RTC_NOINIT_ATTR boot_guard::Record g_bootRecord;
+static boot_guard::Plan    g_bootPlan = {boot_guard::Cause::PowerOn, true, true, false, false, 0};
+static OutputGuard         g_outputGuard;
+static power_ramp::Limiter g_currentRamp;
+static bool                g_wdtArmed = false;
+static bool                g_stableNoted = false;
+
+// Brake or reverse, read straight from the pins (usable before the input task runs).
+static bool safetyInputActive() {
+#if TAILLIGHT_OUTPUT_GUARD
+    return digitalRead(PIN_DRIVER_BRAKE)      == OPT_ACTIVE_LEVEL
+        || digitalRead(PIN_PASSENGER_BRAKE)   == OPT_ACTIVE_LEVEL
+        || digitalRead(PIN_DRIVER_REVERSE)    == OPT_ACTIVE_LEVEL
+        || digitalRead(PIN_PASSENGER_REVERSE) == OPT_ACTIVE_LEVEL;
+#else
+    return false;  // Wi-Fi builds keep their startup sequence as it was.
+#endif
+}
+
+// Arms the task watchdog for the calling task and checks that it took.
+static void armTaskWatchdog(uint32_t timeoutS) {
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+    const esp_task_wdt_config_t wdtCfg = {
+        .timeout_ms     = timeoutS * 1000,
+        .idle_core_mask = 0,
+        .trigger_panic  = true,
+    };
+    esp_err_t error = esp_task_wdt_reconfigure(&wdtCfg);
+    if (error == ESP_ERR_INVALID_STATE) error = esp_task_wdt_init(&wdtCfg);  // Not started by the core.
+#else
+    esp_err_t error = esp_task_wdt_init(timeoutS, /*panic=*/true);
+#endif
+    if (esp_task_wdt_status(nullptr) != ESP_OK) esp_task_wdt_add(nullptr);
+    g_wdtArmed = esp_task_wdt_status(nullptr) == ESP_OK;
+    if (error != ESP_OK || !g_wdtArmed) {
+        Serial.printf("[boot] task watchdog NOT armed (error %d)\n", (int)error);
+    }
+}
+
+// The hardware watchdog is fed only by frames that reached both lamps. A lamp
+// that keeps refusing frames gets a full reset at once.
+static void serviceOutputGuard() {
+#if TAILLIGHT_OUTPUT_GUARD
+    const unsigned long nowMs = millis();
+    const uint32_t completed[2] = { ledTransportStatus(0).completed, ledTransportStatus(1).completed };
+    const uint32_t failures[2]  = { ledTransportStatus(0).failures,  ledTransportStatus(1).failures };
+    if (g_outputGuard.update(completed, failures, nowMs)) {
+        hwWatchdogFeed();
+        if (!g_stableNoted && nowMs >= STABLE_RUN_MS) {
+            boot_guard::onStable(g_bootRecord);
+            g_stableNoted = true;
+        }
+    }
+    if (g_bootPlan.quickRestart
+        && g_outputGuard.stalled(nowMs, OUTPUT_STALL_RESET_MS, OUTPUT_STALL_MIN_FAILURES)) {
+        Serial.println(F("[guard] LED output stalled - full reset"));
+        boot_guard::markOutputStall(g_bootRecord);
+        hwWatchdogResetNow();
+    }
+#endif
+}
+
+// Called from every wait and frame of the boot-time routines.
+static void bootFeed() {
+    if (g_wdtArmed) esp_task_wdt_reset();
+    serviceOutputGuard();
+}
+
+static void bootDelay(uint32_t ms) {
+    while (ms > 0) {
+        const uint32_t part = ms > 10 ? 10 : ms;
+        bootFeed();
+        delay(part);
+        ms -= part;
+    }
+    bootFeed();
+}
 
 // ── Boot-fault state (set in logAndCountReset, reported after CAN is up) ───────
 static esp_reset_reason_t g_bootReason       = ESP_RST_UNKNOWN;
@@ -116,26 +201,56 @@ static void logAndCountReset() {
 
     esp_reset_reason_t reason = esp_reset_reason();
 
+    // What this boot may do, from why it happened and how many fault restarts came before it.
+    boot_guard::Cause cause = boot_guard::Cause::Software;
+    switch (reason) {
+        case ESP_RST_POWERON:
+        case ESP_RST_EXT:        cause = boot_guard::Cause::PowerOn;  break;
+        case ESP_RST_BROWNOUT:
+        case ESP_RST_PWR_GLITCH: cause = boot_guard::Cause::Brownout; break;
+        case ESP_RST_TASK_WDT:
+        case ESP_RST_INT_WDT:
+        case ESP_RST_WDT:        cause = boot_guard::Cause::Watchdog; break;
+        case ESP_RST_PANIC:
+        case ESP_RST_CPU_LOCKUP: cause = boot_guard::Cause::Panic;    break;
+        default: break;
+    }
+#if TAILLIGHT_OUTPUT_GUARD
+    g_bootPlan = boot_guard::onBoot(g_bootRecord, cause, g_settings.startup_anim != 0);
+#else
+    g_bootPlan = {cause, true, g_settings.startup_anim != 0, false, false, 0};
+#endif
+    Serial.printf("  Boot plan  - fault restarts in a row: %u, holdoff: %s, startup animation: %s%s\n",
+                  g_bootPlan.streak, g_bootPlan.crankHoldoff ? "yes" : "no",
+                  g_bootPlan.startupAnimation ? "yes" : "no",
+                  g_bootPlan.safeMode ? ", SAFE MODE (reduced LED current)" : "");
+    if (g_bootPlan.cause == boot_guard::Cause::OutputStall) {
+        const uint32_t n = prefs.getUInt("output", 0) + 1;
+        if (g_bootPlan.streak <= 5) prefs.putUInt("output", n);  // A reset loop must not wear the flash.
+        Serial.printf("  [FAULT] LED output stalled, reset by the output guard - count now %u\n", n);
+    }
+
     // Increment the relevant counter
     switch (reason) {
         case ESP_RST_TASK_WDT:
+        case ESP_RST_INT_WDT:
         case ESP_RST_WDT: {
             uint32_t n = prefs.getUInt("wdt", 0) + 1;
-            prefs.putUInt("wdt", n);
+            if (g_bootPlan.streak <= 5) prefs.putUInt("wdt", n);
             Serial.printf("  [FAULT] WDT reset — count now %u\n", n);
             g_bootFaultCount = n;
             break;
         }
         case ESP_RST_PANIC: {
             uint32_t n = prefs.getUInt("panic", 0) + 1;
-            prefs.putUInt("panic", n);
+            if (g_bootPlan.streak <= 5) prefs.putUInt("panic", n);
             Serial.printf("  [FAULT] Panic reset \u2014 count now %u\n", n);
             g_bootFaultCount = n;
             break;
         }
         case ESP_RST_BROWNOUT: {
             uint32_t n = prefs.getUInt("brownout", 0) + 1;
-            prefs.putUInt("brownout", n);
+            if (g_bootPlan.streak <= 5) prefs.putUInt("brownout", n);
             Serial.printf("  [FAULT] Brownout reset \u2014 count now %u\n", n);
             g_bootFaultCount = n;
             break;
@@ -152,11 +267,12 @@ static void logAndCountReset() {
 
     // Always print the full fault log on boot so a connected Serial monitor
     // immediately shows any accumulated crash history
-    Serial.printf("  Fault log  — PowerOn: %u  WDT: %u  Panic: %u  Brownout: %u\n",
+    Serial.printf("  Fault log  — PowerOn: %u  WDT: %u  Panic: %u  Brownout: %u  LED output: %u\n",
         prefs.getUInt("poweron",  0),
         prefs.getUInt("wdt",      0),
         prefs.getUInt("panic",    0),
-        prefs.getUInt("brownout", 0));
+        prefs.getUInt("brownout", 0),
+        prefs.getUInt("output",   0));
 
     const char* reasonStr = "UNKNOWN";
     switch (reason) {
@@ -164,6 +280,7 @@ static void logAndCountReset() {
         case ESP_RST_SW:       reasonStr = "SW-RESET";  break;
         case ESP_RST_PANIC:    reasonStr = "PANIC";     break;
         case ESP_RST_WDT:      reasonStr = "WDT";       break;
+        case ESP_RST_INT_WDT:  reasonStr = "INT-WDT";   break;
         case ESP_RST_TASK_WDT: reasonStr = "TASK-WDT";  break;
         case ESP_RST_BROWNOUT: reasonStr = "BROWNOUT";  break;
         case ESP_RST_DEEPSLEEP:reasonStr = "DEEP-SLEEP"; break;
@@ -274,13 +391,13 @@ static void st_flashSegment(int seg, CRGB colour, uint32_t holdMs) {
         ledsPassenger[i] = colour;
     }
     ledOutputShow();
-    delay(holdMs);
+    bootDelay(holdMs);
     for (int i = base; i < base + count; i++) {
         ledsDriver[i]  = CRGB::Black;
         ledsPassenger[i] = CRGB::Black;
     }
     ledOutputShow();
-    delay(100);
+    bootDelay(100);
 }
 
 // ---------------------------------------------------------------------------
@@ -329,7 +446,7 @@ static void st_chaserTest() {
             }
         }
         ledOutputShow();
-        delay(6);  // ~166 px/sec — visually readable chase speed
+        bootDelay(6);  // ~166 px/sec — visually readable chase speed
     }
 }
 
@@ -346,7 +463,7 @@ static void st_colorVerify() {
         fill_solid(ledsDriver,  LEDS_PER_SIDE, cols[i]);
         fill_solid(ledsPassenger, LEDS_PER_SIDE, cols[i]);
         ledOutputShow();
-        delay(350);
+        bootDelay(350);
     }
     ledOutputClear();
 }
@@ -388,7 +505,7 @@ static void runStartupSelfTest() {
 
 // ===========================================================================
 // Animation demo — plays once after the startup self-test.
-// Five scenes across all 380 LEDs per side.  Uses delay() like the self-test.
+// Five scenes across all 380 LEDs per side.  Uses bootDelay() like the self-test.
 // ===========================================================================
 
 // ===========================================================================
@@ -404,6 +521,20 @@ static void runStartupSelfTest() {
 //
 // Phase 3 (~300 ms): Brightness fades from full red to black.
 // ===========================================================================
+// One frame of the startup animation. False when brake or reverse came on: the
+// animation ends at once so the real lights are not kept waiting.
+static bool startupFrame(uint32_t holdMs) {
+    ledOutputShow();
+    bootDelay(holdMs);
+    return !safetyInputActive();
+}
+
+static void startupBlank() {
+    fill_solid(ledsDriver,  LEDS_PER_SIDE, CRGB::Black);
+    fill_solid(ledsPassenger, LEDS_PER_SIDE, CRGB::Black);
+    ledOutputShow(true);  // Forced: the frame limiter must never drop the blanking frame.
+}
+
 static void runStartupAnim() {
     // ── Phase 1: outward sequential red fill ─────────────────────────────────
     for (int step = 0; step <= STRIP_COLS + 2; step++) {
@@ -423,8 +554,7 @@ static void runStartupAnim() {
                 }
             }
         }
-        ledOutputShow();
-        delay(17);
+        if (!startupFrame(17)) { startupBlank(); return; }
     }
 
     // ── Phase 2: white comet on top strip (clear diffuser) ───────────────────
@@ -447,8 +577,7 @@ static void runStartupAnim() {
                 }
             }
         }
-        ledOutputShow();
-        delay(8);
+        if (!startupFrame(8)) { startupBlank(); return; }
     }
 
     // ── Phase 3: fade to black ────────────────────────────────────────────────
@@ -458,12 +587,9 @@ static void runStartupAnim() {
             ledsDriver[i]  = CRGB((uint8_t)((ledsDriver[i].r  * scale) >> 8), 0, 0);
             ledsPassenger[i] = CRGB((uint8_t)((ledsPassenger[i].r * scale) >> 8), 0, 0);
         }
-        ledOutputShow();
-        delay(18);
+        if (!startupFrame(18)) break;
     }
-    fill_solid(ledsDriver,  LEDS_PER_SIDE, CRGB::Black);
-    fill_solid(ledsPassenger, LEDS_PER_SIDE, CRGB::Black);
-    ledOutputShow();
+    startupBlank();
 }
 
 // ===========================================================================
@@ -522,7 +648,7 @@ static void runTestCycle() {
             driverPanel.update(s.left,  now);
             passengerPanel.update(s.right, now);
             ledOutputShow();
-            delay(16);
+            bootDelay(16);
         }
     }
 
@@ -536,7 +662,7 @@ static void runTestCycle() {
     driverPanel.fill(CRGB::Black);
     passengerPanel.fill(CRGB::Black);
     ledOutputShow();
-    delay(200);
+    bootDelay(200);
 }
 
 // ── Scene 1: Rainbow river (2 s) ─────────────────────────────────────────────
@@ -555,10 +681,10 @@ static void demo_rainbowRiver() {
             ledsPassenger[i] = CHSV(hueR, 230, 200);
         }
         ledOutputShow();
-        delay(frameMs);
+        bootDelay(frameMs);
     }
     ledOutputClear();
-    delay(80);
+    bootDelay(80);
 }
 
 // ── Scene 2: Cyan mirror bolt (≈3 s) ─────────────────────────────────────────
@@ -591,7 +717,7 @@ static void demo_mirrorBolt() {
             drawBolt(CENTER + offset, CENTER - offset, b);
         }
         ledOutputShow();
-        delay(frameMs);
+        bootDelay(frameMs);
     }
 
     // Inward — from both ends toward centre
@@ -605,10 +731,10 @@ static void demo_mirrorBolt() {
             drawBolt((LEDS_PER_SIDE - 1) - offset, offset, b);
         }
         ledOutputShow();
-        delay(frameMs);
+        bootDelay(frameMs);
     }
     ledOutputClear();
-    delay(80);
+    bootDelay(80);
 }
 
 // ── Scene 3: Red theater chase (1.5 s) ───────────────────────────────────────
@@ -624,10 +750,10 @@ static void demo_theaterChase() {
             ledsPassenger[i] = ((i - step + 3 * 100) % 3 == 0) ? CRGB(220, 30, 0) : CRGB::Black;
         }
         ledOutputShow();
-        delay(frameMs);
+        bootDelay(frameMs);
     }
     ledOutputClear();
-    delay(80);
+    bootDelay(80);
 }
 
 // ── Scene 4: Magenta breathe (1.6 s, 2 pulses) ───────────────────────────────
@@ -643,10 +769,10 @@ static void demo_breathe() {
         fill_solid(ledsDriver,  LEDS_PER_SIDE, col);
         fill_solid(ledsPassenger, LEDS_PER_SIDE, col);
         ledOutputShow();
-        delay(frameMs);
+        bootDelay(frameMs);
     }
     ledOutputClear();
-    delay(80);
+    bootDelay(80);
 }
 
 // ── Scene 5: Foxbody fire-flash finale (≈1.1 s) ───────────────────────────────
@@ -660,7 +786,7 @@ static void demo_fireFlash() {
         fill_solid(ledsDriver,  LEDS_PER_SIDE, col);
         fill_solid(ledsPassenger, LEDS_PER_SIDE, col);
         ledOutputShow();
-        delay(frameMs);
+        bootDelay(frameMs);
     }
     // White burst (250 ms)
     for (int t = 0; t < 250; t += frameMs) {
@@ -669,7 +795,7 @@ static void demo_fireFlash() {
         fill_solid(ledsDriver,  LEDS_PER_SIDE, col);
         fill_solid(ledsPassenger, LEDS_PER_SIDE, col);
         ledOutputShow();
-        delay(frameMs);
+        bootDelay(frameMs);
     }
     // Fade out (450 ms)
     for (int t = 0; t < 450; t += frameMs) {
@@ -678,7 +804,7 @@ static void demo_fireFlash() {
         fill_solid(ledsDriver,  LEDS_PER_SIDE, col);
         fill_solid(ledsPassenger, LEDS_PER_SIDE, col);
         ledOutputShow();
-        delay(frameMs);
+        bootDelay(frameMs);
     }
     ledOutputClear();
 }
@@ -753,6 +879,12 @@ void setup() {
     // Must run before any Serial output that overwrites the reason line.
     logAndCountReset();
 
+#if TAILLIGHT_OUTPUT_GUARD
+    // Watchdog cover starts here, not at the end of setup(): a hang in the holdoff,
+    // the startup animation or CAN start-up used to leave the lamps frozen for good.
+    armTaskWatchdog(WDT_BOOT_TIMEOUT_S);
+#endif
+
     // ── Graceful LED blank on any future reset ────────────────────────────────
     // The handler clears both panels before the MCU restarts, so a WDT or
     // panic does not leave LEDs frozen on a random animation frame.
@@ -760,6 +892,10 @@ void setup() {
 
     // Register LED panels with FastLED
     ledTransportBegin(ledsDriver, ledsPassenger, &statusLed.pixel);
+#if TAILLIGHT_OUTPUT_GUARD
+    // From here on only frames that reach both lamps keep the chip from a full reset.
+    hwWatchdogBegin(OUTPUT_WDT_TIMEOUT_MS);
+#endif
     // Per-side brightness trims are intentionally equal by default. FastLED
     // 3.10 removed the old per-controller setScale() API, so side matching is
     // enforced by shared state/colour rendering rather than controller scale.
@@ -774,13 +910,16 @@ void setup() {
     // FastLED calculates estimated draw from pixel colours each frame and
     // scales global brightness down automatically if the budget would be
     // exceeded.  This runs inside FastLED.show() — no manual work needed.
-    FastLED.setMaxPowerInVoltsAndMilliamps(LED_VOLTAGE, LED_POWER_BUDGET_MA);
+    FastLED.setMaxPowerInVoltsAndMilliamps(
+        LED_VOLTAGE, g_bootPlan.safeMode ? LED_SAFE_MODE_BUDGET_MA : LED_POWER_BUDGET_MA);
     // ── Crank holdoff ────────────────────────────────────────────────────────
     // Keep LEDs blank for CRANK_HOLDOFF_MS after boot.  If the car is being
     // cranked and a momentary voltage sag resets the ESP32, it will restart
     // the holdoff and wait again.  The WDT is not yet active here so a
     // simple delay loop is safe.
-    if (CRANK_HOLDOFF_MS > 0) {
+    // A restart after a fault skips the wait: the supply was already running the
+    // lights, and the brake lights must come back at once.
+    if (CRANK_HOLDOFF_MS > 0 && g_bootPlan.crankHoldoff) {
         Serial.printf("[boot] crank holdoff — waiting %lu ms for supply to stabilise ...\n",
                       CRANK_HOLDOFF_MS);
         const unsigned long holdStart = millis();
@@ -789,7 +928,7 @@ void setup() {
             // sign of life during the holdoff window.
             statusLed.tick(millis());
             ledOutputShow();
-            delay(10);
+            bootDelay(10);
         }
         Serial.println(F("[boot] holdoff complete — supply stable"));
     }
@@ -811,7 +950,9 @@ void setup() {
     Serial.println(F("[boot] wifi ready"));
 #else
     // PCB build: settings arrive over CAN from the dashboard; keep the radio off.
+#ifndef TAILLIGHT_HEADLESS
     WiFi.mode(WIFI_OFF);
+#endif  // The headless build links no Wi-Fi code at all.
     Serial.println(F("[boot] wifi disabled (CAN settings)"));
 #endif
 
@@ -849,7 +990,8 @@ void setup() {
     // ── Startup animation ────────────────────────────────────────────────────
     // Quick automotive sequential sweep (~900 ms).  Skipped when disabled
     // via the web UI (startup_anim == 0) for instant-on in-car boots.
-    if (g_settings.startup_anim) {
+    // Not after a fault restart, and not while brake or reverse is already on.
+    if (g_bootPlan.startupAnimation && !safetyInputActive()) {
         Serial.println(F("[boot] startup animation"));
         runStartupAnim();
         Serial.println(F("[boot] startup animation complete"));
@@ -880,6 +1022,7 @@ void setup() {
         // Faults detected before CAN was up are reported here as one-shots.
         switch (g_bootReason) {
             case ESP_RST_TASK_WDT:
+            case ESP_RST_INT_WDT:
             case ESP_RST_WDT:
                 canBus.reportFault(FAULT_WDT_RESET, FAULT_SEV_WARNING,
                                    (uint8_t)(g_bootFaultCount & 0xFF));
@@ -910,20 +1053,9 @@ void setup() {
     // ── Hardware Task Watchdog ────────────────────────────────────────────────
     // Initialised after all blocking boot work so WiFi STA connection attempts
     // cannot trip the 3-second watchdog before AP fallback or normal signals.
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
-    {
-        const esp_task_wdt_config_t wdtCfg = {
-            .timeout_ms     = WDT_TIMEOUT_S * 1000,
-            .idle_core_mask = 0,
-            .trigger_panic  = true,
-        };
-        esp_task_wdt_reconfigure(&wdtCfg);
-    }
-#else
-    esp_task_wdt_init(WDT_TIMEOUT_S, /*panic=*/true);
-#endif
-    // Subscribe the render task (loop) to the watchdog.
-    esp_task_wdt_add(nullptr);
+    // PCB builds armed it at the top of setup() with a longer allowance; this
+    // tightens it for the main loop and subscribes the render task if needed.
+    armTaskWatchdog(WDT_TIMEOUT_S);
 
     // ── Input task (Core 0, priority 4) ──────────────────────────────────────────
     // Polls all 8 opto channels at 1 ms, independent of LED render time.
@@ -949,6 +1081,7 @@ void loop() {
     // Feed the hardware Task Watchdog.  If this call stops arriving within
     // WDT_TIMEOUT_S seconds the MCU performs a clean panic reset.
     esp_task_wdt_reset();
+    serviceOutputGuard();
 
 #if TAILLIGHT_WIFI_ENABLED
     // Process any pending HTTP requests from the web UI.
@@ -1147,10 +1280,23 @@ void loop() {
         g_lighting.driver = driverState;
         g_lighting.passenger = passengerState;
         g_lighting.driverLit = g_lighting.passengerLit = 0;
+        uint32_t channelSum = 0;
         for (int i = 0; i < LEDS_PER_SIDE; ++i) {
             if (ledsDriver[i].r || ledsDriver[i].g || ledsDriver[i].b) ++g_lighting.driverLit;
             if (ledsPassenger[i].r || ledsPassenger[i].g || ledsPassenger[i].b) ++g_lighting.passengerLit;
+            channelSum += ledsDriver[i].r + ledsDriver[i].g + ledsDriver[i].b
+                        + ledsPassenger[i].r + ledsPassenger[i].g + ledsPassenger[i].b;
         }
+#if TAILLIGHT_OUTPUT_GUARD
+        // The lights come on in this frame; full brightness follows a frame or two
+        // later, so the supply never sees the whole load arrive at once.
+        FastLED.setBrightness(g_currentRamp.apply(
+            channelSum, safeBrightness,
+            g_bootPlan.safeMode ? LED_SAFE_MODE_STEP_MA : LED_CURRENT_STEP_MA,
+            g_bootPlan.safeMode ? LED_SAFE_MODE_BUDGET_MA : LED_POWER_BUDGET_MA));
+#else
+        (void)channelSum;
+#endif
 
         // Tick the status LED and push all controllers together in one show()
         statusLed.tick(nowMs);
