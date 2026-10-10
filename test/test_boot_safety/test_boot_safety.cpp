@@ -4,6 +4,7 @@
 #include <cstring>
 #include <iostream>
 #include "boot_guard.h"
+#include "fail_safe.h"
 #include "output_guard.h"
 #include "power_ramp.h"
 
@@ -132,7 +133,49 @@ static void test_led_current_rises_in_steps_and_falls_at_once() {
     assert(frames >= 2 && frames <= 6);
 }
 
+static void test_a_held_brake_line_counts_without_the_input_task() {
+    fail_safe::HeldLevel brake;
+    assert(!brake.update(false, 0, 60));
+    assert(!brake.update(true, 100, 60));                   // Just went active: the input task's job.
+    assert(!brake.update(true, 150, 60));
+    assert(brake.update(true, 160, 60));                    // Held 60 ms: honoured here too.
+    assert(brake.update(true, 5000, 60));
+    assert(!brake.update(false, 5001, 60));                 // Released at once.
+    for (unsigned long t = 6000; t < 7000; t += 40) {       // Noise shorter than the hold never counts.
+        assert(!brake.update(true, t, 60));
+        assert(!brake.update(false, t + 20, 60));
+    }
+}
+
+static void test_a_dark_brake_lamp_is_painted_and_a_flashing_one_is_left_alone() {
+    fail_safe::DarkLamp lamp;
+    assert(!lamp.update(false, 0, 0, 400));                 // Not braking: dark is correct.
+    assert(!lamp.update(true, 380, 100, 400));              // Lit: nothing to do.
+    assert(!lamp.update(true, 0, 200, 400));
+    assert(!lamp.update(true, 0, 575, 400));
+    assert(lamp.update(true, 0, 600, 400));                 // Dark for 0.4 s while braking.
+    assert(lamp.update(true, 0, 9000, 400));                // And stays painted for as long as it would be dark.
+    assert(!lamp.update(true, 380, 9025, 400));
+    for (unsigned long t = 10000; t < 14000; t += 250) {    // A brake flash effect: dark 125 ms at a time.
+        assert(!lamp.update(true, 0, t, 400));
+        assert(!lamp.update(true, 0, t + 100, 400));
+        assert(!lamp.update(true, 380, t + 125, 400));
+    }
+    assert(!lamp.update(false, 0, 20000, 400));             // Brake released while dark: the timer starts over.
+    assert(!lamp.update(true, 0, 20300, 400));
+}
+
+static void test_brightness_has_a_floor_only_for_the_safety_lights() {
+    assert(fail_safe::floorBrightness(0, true, 30) == 30);  // A CAN brightness of 0 cannot switch the brake lights off.
+    assert(fail_safe::floorBrightness(12, true, 30) == 30);
+    assert(fail_safe::floorBrightness(128, true, 30) == 128);
+    assert(fail_safe::floorBrightness(0, false, 30) == 0);  // Running lights and shows may be dimmed to nothing.
+}
+
 int main() {
+    test_a_held_brake_line_counts_without_the_input_task();
+    test_a_dark_brake_lamp_is_painted_and_a_flashing_one_is_left_alone();
+    test_brightness_has_a_floor_only_for_the_safety_lights();
     test_power_on_is_a_fresh_start();
     test_a_fault_restart_goes_straight_back_to_the_lights();
     test_three_fault_restarts_in_a_row_select_safe_mode_until_a_stable_run();
@@ -140,5 +183,5 @@ int main() {
     test_frames_reaching_both_lamps_feed_the_watchdog();
     test_a_lamp_that_keeps_refusing_frames_is_a_stall_and_a_quiet_pause_is_not();
     test_led_current_rises_in_steps_and_falls_at_once();
-    std::cout << "Boot plan, output guard and current ramp tests passed\n";
+    std::cout << "Boot plan, output guard, current ramp and fail-safe tests passed\n";
 }

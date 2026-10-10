@@ -12,6 +12,10 @@ static constexpr uint8_t CMD_CUSTOM_ANIM    = 0x04;
 static constexpr unsigned long CAN_POLL_MS = 2;
 static constexpr unsigned long CAN_TX_TIMEOUT_MS = 20;
 static constexpr unsigned long CAN_RETRY_MAX_MS = 10000;
+static constexpr unsigned long CAN_REPAIR_FIRST_MS = 5000;   // After a failed start
+static constexpr unsigned long CAN_REPAIR_FAST_MS = 250;     // After a controller that was working lost its settings
+static constexpr unsigned long CAN_REPAIR_MAX_MS = 60000;
+static constexpr unsigned long CAN_HEALTH_MS = 1000;
 static constexpr uint8_t REG_CANCTRL = 0x0F;
 static constexpr uint8_t REG_TXB0CTRL = 0x30;
 static constexpr uint8_t TXREQ = 0x08;
@@ -56,7 +60,7 @@ bool CANBus::_initMCP() {
     _txRetryDelayMs = 0;
     if (_mcp.reset() != MCP2515::ERROR_OK
         || _mcp.setBitrate(CAN_500KBPS, MCP_8MHZ) != MCP2515::ERROR_OK) {
-        Serial.println(F("[CAN] init failed; CAN disabled until restart"));
+        if (!_quietInit) Serial.println(F("[CAN] init failed; retrying in the background"));
         return false;
     }
     if (_mcp.setFilterMask(MCP2515::MASK0, false, 0x7FF) != MCP2515::ERROR_OK
@@ -68,7 +72,7 @@ bool CANBus::_initMCP() {
         || _mcp.setFilter(MCP2515::RXF4, false, CAN_ID_COMMAND) != MCP2515::ERROR_OK
         || _mcp.setFilter(MCP2515::RXF5, false, CAN_ID_COMMAND) != MCP2515::ERROR_OK
         || _mcp.setNormalMode() != MCP2515::ERROR_OK) {
-        Serial.println(F("[CAN] configuration failed; CAN disabled until restart"));
+        if (!_quietInit) Serial.println(F("[CAN] configuration failed; retrying in the background"));
         return false;
     }
 
@@ -77,12 +81,52 @@ bool CANBus::_initMCP() {
     // and falsely times out, so enable and verify OSM explicitly instead.
     _modifyRegister(REG_CANCTRL, 0x08, 0x08);
     if ((_readRegister(REG_CANCTRL) & 0xE8) != 0x08) {
-        Serial.println(F("[CAN] one-shot mode readback failed; CAN disabled"));
+        if (!_quietInit) Serial.println(F("[CAN] one-shot mode readback failed; retrying in the background"));
         return false;
     }
     _online = true;
-    Serial.println(F("[CAN] MCP2515 ready - 500 kbit/s, one-shot TX"));
+    _healthMisses = 0;
+    if (!_quietInit) Serial.println(F("[CAN] MCP2515 ready - 500 kbit/s, one-shot TX"));
     return true;
+}
+
+// One attempt when its time has come. Quiet while it keeps failing: a controller that
+// is simply not fitted must not fill the log or disturb the lights.
+void CANBus::_repair(unsigned long nowMs) {
+    if (_repairDelayMs == 0) {
+        _repairDelayMs = CAN_REPAIR_FIRST_MS;
+        _nextRepairMs = nowMs + _repairDelayMs;
+        return;
+    }
+    if (static_cast<long>(nowMs - _nextRepairMs) < 0) return;
+    _quietInit = true;
+    const bool ok = _initMCP();
+    _quietInit = false;
+    if (ok) {
+        ++_repairs;
+        _repairDelayMs = 0;
+        _lastHealthMs = nowMs;
+        Serial.println(F("[CAN] MCP2515 recovered"));
+        return;
+    }
+    _repairDelayMs = min(_repairDelayMs * 2, CAN_REPAIR_MAX_MS);
+    _nextRepairMs = nowMs + _repairDelayMs;
+}
+
+// A supply dip can reset the MCP2515 without resetting the ESP32. It then sits in
+// configuration mode with its filters and one-shot bit gone: nothing is sent or
+// received and no error is raised. Its control register tells.
+void CANBus::_checkHealth(unsigned long nowMs) {
+    if (nowMs - _lastHealthMs < CAN_HEALTH_MS) return;
+    _lastHealthMs = nowMs;
+    if ((_readRegister(REG_CANCTRL) & 0xE8) == 0x08) { _healthMisses = 0; return; }
+    if (++_healthMisses < 2) return;  // One odd reading is not acted on.
+    _healthMisses = 0;
+    _online = false;
+    _txPending = false;
+    _repairDelayMs = CAN_REPAIR_FAST_MS;
+    _nextRepairMs = nowMs + CAN_REPAIR_FAST_MS;
+    Serial.println(F("[CAN] MCP2515 lost its settings; restoring"));
 }
 
 void CANBus::_txFailed(unsigned long nowMs) {
@@ -149,10 +193,16 @@ void CANBus::tick(LightState driverState, LightState passengerState,
         clearCustomAnim();
         AnimationRegistry::setCustomSlot(AnimationRegistry::CustomSlot::NONE);
     }
-    // Failed startup stays quiet. Retrying reset()/setMode() here used to
-    // block the render loop every second when the MCP2515 was unavailable.
-    if (!_online || nowMs - _lastPollMs < CAN_POLL_MS) return;
+    if (!_online) {
+        // Retried rarely (5 s, doubling to 60 s), one bounded attempt each time, and
+        // never while brake or reverse is on: those are not kept waiting for CAN.
+        if (!((inputs.driverSnapshot() | inputs.passengerSnapshot()) & 0x09)) _repair(nowMs);
+        return;
+    }
+    if (nowMs - _lastPollMs < CAN_POLL_MS) return;
     _lastPollMs = nowMs;
+    _checkHealth(nowMs);
+    if (!_online) return;
 
     const uint8_t eflg = _mcp.getErrorFlags();
     const bool busOff = (eflg & 0x20) != 0;

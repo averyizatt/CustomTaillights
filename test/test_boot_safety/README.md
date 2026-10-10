@@ -1,6 +1,7 @@
 Recovery safeguards as pure logic: the boot plan after each kind of restart
 (`boot_guard.h`), when the lamps count as delivered or stalled (`output_guard.h`),
-and the limit on how fast the LED current may rise (`power_ramp.h`).
+the limit on how fast the LED current may rise (`power_ramp.h`), and the second
+opinions on brake, reverse and brightness (`fail_safe.h`).
 
 ```powershell
 $env:PATH = 'C:\msys64\ucrt64\bin;' + $env:PATH

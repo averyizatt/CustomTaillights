@@ -24,6 +24,7 @@ uint8_t* encoded = nullptr;
 int currentPin = -1;
 int initError = ESP_OK;
 bool pending = false;
+uint32_t recoveries = 0;
 LedChannelStatus channels[3];
 
 void recordResult(LedChannelStatus& stats, esp_err_t error) {
@@ -153,5 +154,24 @@ void ledTransportBegin(CRGB* driver, CRGB* passenger, CRGB* status) {
                   initError == ESP_OK ? "ready" : "unavailable", initError);
 }
 
+bool ledTransportRecover() {
+    // A transfer the driver has not handed back still owns the buffer and descriptor.
+    if (pending && finishPending(0) != ESP_OK) return false;
+    if (device) {
+        if (spi_bus_remove_device(device) != ESP_OK) return false;
+        device = nullptr;
+        spi_bus_free(LED_HOST);
+    }
+    if (encoded) { heap_caps_free(encoded); encoded = nullptr; }
+    for (const auto& output : channels) holdLow(output.pin);
+    initError = initTransport();
+    if (initError != ESP_OK && encoded) { heap_caps_free(encoded); encoded = nullptr; }
+    ++recoveries;
+    Serial.printf("[LED] transport rebuilt: %s (error %d)\n",
+                  initError == ESP_OK ? "ready" : "unavailable", initError);
+    return initError == ESP_OK;
+}
+
+uint32_t ledTransportRecoveries() { return recoveries; }
 const LedChannelStatus& ledTransportStatus(unsigned index) { return channels[index < 3 ? index : 0]; }
 const char* ledTransportName() { return "spi3-dma-full-frame"; }

@@ -53,6 +53,8 @@ public:
 
     // Controller initialized and not bus-off; does not imply a peer ACK.
     bool isOnline() const { return _online && !_busOff; }
+    // Times the MCP2515 was brought back after failing to start or losing its settings.
+    uint16_t repairs() const { return _repairs; }
 
     // ── Custom animation (Cmd 0x04) ───────────────────────────────────────────
     // True after a Cmd 0x04 is received and while the animation is running.
@@ -125,7 +127,17 @@ private:
     unsigned long _lastTxFailureMs = 0;
     unsigned long _txRetryDelayMs = 0;
     unsigned long _lastPollMs = 0;
-    bool _initMCP(); // Startup only: library reset/mode calls can block.
+    bool _initMCP(); // One bounded attempt (a few tens of milliseconds at most).
+    // Self-repair: a failed start is retried with a growing pause, and a controller
+    // that was reset on its own (a supply dip) is noticed and set up again.
+    void _repair(unsigned long nowMs);
+    void _checkHealth(unsigned long nowMs);
+    bool _quietInit = false;
+    uint16_t _repairs = 0;
+    uint8_t _healthMisses = 0;
+    unsigned long _repairDelayMs = 0;
+    unsigned long _nextRepairMs = 0;
+    unsigned long _lastHealthMs = 0;
     void _sendFrame(const struct can_frame& frame);
     void _checkTx(unsigned long nowMs);
     void _txFailed(unsigned long nowMs);

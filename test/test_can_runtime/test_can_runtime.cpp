@@ -40,8 +40,47 @@ void test_missing_controller_stays_quiet() {
     assert(!bus.begin());
     const auto logs = Serial.lines.size();
     for (unsigned long t = 0; t < 60000; t += 2) tick(bus, t);
-    assert(MCP2515::resets == 1 && MCP2515::sent.empty());
-    assert(Serial.lines.size() == logs);
+    // Retried at 5 s, then 10, 20 and 40 s later: rare, bounded and silent.
+    assert(MCP2515::resets >= 3 && MCP2515::resets <= 5 && MCP2515::sent.empty());
+    assert(Serial.lines.size() == logs && bus.repairs() == 0 && !bus.isOnline());
+    for (unsigned long t = 60000; t < 600000; t += 2) tick(bus, t);
+    assert(MCP2515::resets <= 5 + 9);                      // No faster than once a minute from then on.
+}
+void test_controller_that_starts_late_is_brought_up() {
+    resetFake(); MCP2515::resetResult = MCP2515::ERROR_FAIL;
+    CANBus bus;
+    assert(!bus.begin());
+    for (unsigned long t = 0; t < 4000; t += 2) tick(bus, t);
+    assert(MCP2515::resets == 1);                          // Not retried at once.
+    MCP2515::resetResult = MCP2515::ERROR_OK;              // Its supply came up.
+    const auto logs = Serial.lines.size();
+    for (unsigned long t = 4000; t < 7000; t += 2) { tick(bus, t); registers[0x30] = 0; }
+    assert(bus.isOnline() && bus.repairs() == 1 && MCP2515::resets == 2);
+    assert((registers[0x0f] & 0xe8) == 0x08);              // Normal mode, one-shot, as after a good start.
+    assert(Serial.lines.size() == logs + 1);               // One line: recovered.
+    assert(!MCP2515::sent.empty());                        // Telemetry is flowing.
+}
+void test_controller_reset_by_a_supply_dip_is_restored() {
+    resetFake(); CANBus bus; assert(bus.begin());
+    for (unsigned long t = 0; t < 3000; t += 2) { tick(bus, t); registers[0x30] = 0; }
+    assert(MCP2515::resets == 1 && bus.repairs() == 0);    // A healthy controller is left alone.
+    registers[0x0f] = 0x80;                                // Power-on state: configuration mode, settings gone.
+    registers[0x30] = 0;
+    unsigned long restored = 0;
+    for (unsigned long t = 3000; t < 8000 && !restored; t += 2) {
+        tick(bus, t); registers[0x30] = 0;
+        if (bus.repairs() == 1) restored = t;
+    }
+    assert(restored && restored - 3000 <= 2500);           // Noticed and set up again within a few seconds.
+    assert(bus.isOnline() && (registers[0x0f] & 0xe8) == 0x08 && MCP2515::resets == 2);
+    const auto count = MCP2515::sent.size();
+    for (unsigned long t = restored + 2; t < restored + 1002; t += 2) { tick(bus, t); registers[0x30] = 0; }
+    assert(MCP2515::sent.size() >= count + 9);             // Back to 100 ms telemetry.
+    // A single odd reading does not trigger a rebuild.
+    registers[0x0f] = 0x80;
+    tick(bus, restored + 2000); registers[0x0f] = 0x08;
+    for (unsigned long t = restored + 2002; t < restored + 6000; t += 2) { tick(bus, t); registers[0x30] = 0; }
+    assert(MCP2515::resets == 2 && bus.repairs() == 1);
 }
 void test_disconnected_bus_and_reconnect() {
     resetFake(); CANBus bus; assert(bus.begin());
@@ -113,6 +152,8 @@ void test_integrated_modes_and_expiry() {
 int main() {
     test_integrated_modes_and_expiry();
     test_missing_controller_stays_quiet();
+    test_controller_that_starts_late_is_brought_up();
+    test_controller_reset_by_a_supply_dip_is_restored();
     test_disconnected_bus_and_reconnect();
     test_stuck_tx_faults_and_bus_off();
     test_rx_budget_and_failed_mode_readback();

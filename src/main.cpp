@@ -55,6 +55,7 @@
 #include "output_guard.h"
 #include "power_ramp.h"
 #include "hw_watchdog.h"
+#include "fail_safe.h"
 #include <esp_attr.h>
 
 // Preview state set by POST /api/preview in wifi_server.cpp.
@@ -94,6 +95,9 @@ static OutputGuard         g_outputGuard;
 static power_ramp::Limiter g_currentRamp;
 static bool                g_wdtArmed = false;
 static bool                g_stableNoted = false;
+static bool                g_repairTried = false;   // One in-place rebuild per stall, then the reset
+static fail_safe::HeldLevel g_rawBrake, g_rawReverse;
+static fail_safe::DarkLamp  g_darkDriver, g_darkPassenger;
 
 // Brake or reverse, read straight from the pins (usable before the input task runs).
 static bool safetyInputActive() {
@@ -136,10 +140,19 @@ static void serviceOutputGuard() {
     const uint32_t failures[2]  = { ledTransportStatus(0).failures,  ledTransportStatus(1).failures };
     if (g_outputGuard.update(completed, failures, nowMs)) {
         hwWatchdogFeed();
+        g_repairTried = false;
         if (!g_stableNoted && nowMs >= STABLE_RUN_MS) {
             boot_guard::onStable(g_bootRecord);
             g_stableNoted = true;
         }
+    }
+    // First rung: rebuild the transport without restarting. It cannot free a transfer
+    // the driver still holds; the reset below is for that.
+    if (!g_repairTried
+        && g_outputGuard.stalled(nowMs, OUTPUT_REPAIR_MS, OUTPUT_REPAIR_MIN_FAILURES)) {
+        g_repairTried = true;
+        Serial.println(F("[guard] LED output refusing frames - rebuilding the transport"));
+        ledTransportRecover();
     }
     if (g_bootPlan.quickRestart
         && g_outputGuard.stalled(nowMs, OUTPUT_STALL_RESET_MS, OUTPUT_STALL_MIN_FAILURES)) {
@@ -863,6 +876,20 @@ static void inputTaskFn(void* /*param*/) {
     // Unreachable — FreeRTOS tasks must not return.
 }
 
+// Counts the lit pixels of each lamp (for the status report and the dark-lamp
+// check) and returns the sum of every colour value in the frame.
+static uint32_t measureFrame() {
+    g_lighting.driverLit = g_lighting.passengerLit = 0;
+    uint32_t channelSum = 0;
+    for (int i = 0; i < LEDS_PER_SIDE; ++i) {
+        if (ledsDriver[i].r || ledsDriver[i].g || ledsDriver[i].b) ++g_lighting.driverLit;
+        if (ledsPassenger[i].r || ledsPassenger[i].g || ledsPassenger[i].b) ++g_lighting.passengerLit;
+        channelSum += ledsDriver[i].r + ledsDriver[i].g + ledsDriver[i].b
+                    + ledsPassenger[i].r + ledsPassenger[i].g + ledsPassenger[i].b;
+    }
+    return channelSum;
+}
+
 // ===========================================================================
 // Arduino entry points
 // ===========================================================================
@@ -1148,9 +1175,21 @@ void loop() {
     // Brake, running, and reverse are vehicle-level steady signals. If either
     // side's optocoupler sees one of these stock circuits active, both
     // taillights render the same steady base mode. Turn signals stay per-side.
-    const bool brakeActive = driverBrake || passengerBrake;
+#if TAILLIGHT_OUTPUT_GUARD
+    // Second opinion, read here on the render core: a brake or reverse line that is
+    // held active counts even if the input task has stopped reporting it.
+    const bool rawBrake = g_rawBrake.update(
+        digitalRead(PIN_DRIVER_BRAKE) == OPT_ACTIVE_LEVEL || digitalRead(PIN_PASSENGER_BRAKE) == OPT_ACTIVE_LEVEL,
+        nowMs, RAW_BACKUP_HOLD_MS);
+    const bool rawReverse = g_rawReverse.update(
+        digitalRead(PIN_DRIVER_REVERSE) == OPT_ACTIVE_LEVEL || digitalRead(PIN_PASSENGER_REVERSE) == OPT_ACTIVE_LEVEL,
+        nowMs, RAW_BACKUP_HOLD_MS);
+#else
+    const bool rawBrake = false, rawReverse = false;
+#endif
+    const bool brakeActive = driverBrake || passengerBrake || rawBrake;
     const bool runningActive = driverRunning || passengerRunning;
-    const bool reverseActive = driverReverse || passengerReverse;
+    const bool reverseActive = driverReverse || passengerReverse || rawReverse;
 
     // Blink detection is transition-based. A steady ON turn input may be an
     // electrical fault or a held line, but it is not enough to select TURN or
@@ -1279,15 +1318,27 @@ void loop() {
 
         g_lighting.driver = driverState;
         g_lighting.passenger = passengerState;
-        g_lighting.driverLit = g_lighting.passengerLit = 0;
-        uint32_t channelSum = 0;
-        for (int i = 0; i < LEDS_PER_SIDE; ++i) {
-            if (ledsDriver[i].r || ledsDriver[i].g || ledsDriver[i].b) ++g_lighting.driverLit;
-            if (ledsPassenger[i].r || ledsPassenger[i].g || ledsPassenger[i].b) ++g_lighting.passengerLit;
-            channelSum += ledsDriver[i].r + ledsDriver[i].g + ledsDriver[i].b
-                        + ledsPassenger[i].r + ledsPassenger[i].g + ledsPassenger[i].b;
-        }
+        uint32_t channelSum = measureFrame();
 #if TAILLIGHT_OUTPUT_GUARD
+        // A lamp in the brake state that stays completely dark is painted directly,
+        // whatever the animation, the colour setting or a command produced.
+        const bool paintDriver = g_darkDriver.update(
+            driverState == LightState::BRAKE, g_lighting.driverLit, nowMs, DARK_BRAKE_LIMIT_MS);
+        const bool paintPassenger = g_darkPassenger.update(
+            passengerState == LightState::BRAKE, g_lighting.passengerLit, nowMs, DARK_BRAKE_LIMIT_MS);
+        if (paintDriver || paintPassenger) {
+            CRGB brake(g_settings.brake_r, g_settings.brake_g, g_settings.brake_b);
+            if (brake.r == 0) brake = CRGB(255, 0, 0);  // Behind the red lens only red shows.
+            if (paintDriver) driverPanel.fill(brake);
+            if (paintPassenger) passengerPanel.fill(brake);
+            channelSum = measureFrame();
+        }
+        // Brightness is never below the safety floor while brake, reverse or a turn
+        // signal is asked for, whatever a setting or a CAN brightness command says.
+        safeBrightness = fail_safe::floorBrightness(
+            safeBrightness,
+            brakeActive || reverseActive || driverTurnRequested || passengerTurnRequested || hazardBlinking,
+            BRIGHTNESS_MIN_SAFETY);
         // The lights come on in this frame; full brightness follows a frame or two
         // later, so the supply never sees the whole load arrive at once.
         FastLED.setBrightness(g_currentRamp.apply(

@@ -45,7 +45,18 @@ int main(int argc, char** argv) {
         assert(packets.empty());
         assert(ledTransportStatus(0).lastError != ESP_OK && ledTransportStatus(1).lastError != ESP_OK);
         assert(freed == (failInit ? 0 : 1));
-        std::cout << "Initialization failure handled without abort\n";
+        // Still broken: a rebuild says so and nothing is sent.
+        assert(!ledTransportRecover() && ledTransportRecoveries() == 1);
+        FastLED.show();
+        assert(packets.empty());
+        // The cause gone: a rebuild in place brings both lamps back with no restart.
+        failInit = failAdd = false; actualKhz = 2500;
+        for (bool& route : routed) route = false;   // The failed attempt's bus was freed.
+        assert(ledTransportRecover() && ledTransportRecoveries() == 2);
+        FastLED.show();
+        assert(packets.size() == 3 && packets[0].pin == 4 && packets[1].pin == 6);
+        assert(ledTransportStatus(0).lastError == ESP_OK && ledTransportStatus(1).lastError == ESP_OK);
+        std::cout << "Initialization failure handled without abort, then rebuilt in place\n";
         return 0;
     }
     assert(packets.size() == 3);
@@ -71,10 +82,18 @@ int main(int argc, char** argv) {
     FastLED.show();
     assert(packets.size() == sent && queued->tx_buffer == savedBuffer && queued->length == savedLength);
     assert(std::memcmp(savedBuffer, snapshot.data(), snapshot.size()) == 0);
+    assert(!ledTransportRecover());  // A transfer the driver still holds cannot be rebuilt around.
+    assert(queued && queued->tx_buffer == savedBuffer);
     stall = false;
     FastLED.show(); // reclaim the late completion before encoding another frame
     assert(!queued && packets.size() == sent + 3);
     assert(ledTransportStatus(0).lastError == ESP_OK && ledTransportStatus(1).lastError == ESP_OK);
     assert(decodeByte(&packets[sent].data[96]) == 0xff);
+    // A healthy transport can be rebuilt at any time and carries on.
+    const int freedBefore = freed, createdBefore = created;
+    assert(ledTransportRecover() && freed == freedBefore + 1 && created == createdBefore + 1);
+    const size_t before = packets.size();
+    FastLED.show();
+    assert(packets.size() == before + 3 && ledTransportStatus(1).lastError == ESP_OK);
     std::cout << "Full-frame SPI DMA, GPIO isolation, encoding, timeout ownership and recovery tests passed\n";
 }

@@ -105,13 +105,13 @@ Both the render task (Core 1 / `loop()`) and the input polling task (Core 0) are
 ### Recovery without the reset button (PCB builds)
 A WS2812 lamp keeps showing its last frame for as long as it has power, so a controller
 that stops sending leaves the lamps frozen on whatever was showing: a frame of the
-startup animation, or the brake lights. These layers bring it back by itself. They are
-active in the builds that run with Wi-Fi off (`esp32-s3-pcb`, `esp32-s3-pcb-headless`).
+startup animation, or the brake lights. These layers bring it back by itself, each one
+independent of the one before it.
 
 | Layer | Catches | Action |
 |---|---|---|
 | Task watchdog from the first lines of `setup()` (8 s while booting, then 3 s) | A hang in the crank holdoff, the startup animation or CAN start-up, which used to have no watchdog at all | Panic reset |
-| Output guard (`output_guard.h`) | The LED transport refusing frames while everything else runs: a transfer that never completes blocks every later frame, and every other watchdog stays satisfied | Full reset after 0.5 s and 8 refused frames |
+| Output guard (`output_guard.h`) | The LED transport refusing frames while everything else runs: a transfer that never completes blocks every later frame, and every other watchdog stays satisfied | After 0.15 s the transport is rebuilt in place, with no restart; if frames are still refused at 0.5 s, a full reset |
 | RTC hardware watchdog (`hw_watchdog.c`) | Anything else, including a processor that is not running code. It is fed only by frames that reached **both** lamps | System reset after 5 s without one; if that does not help, a reset that also restarts the RTC, as the reset button does |
 | Fast return (`boot_guard.h`) | The wait after a fault | A restart after a watchdog, crash or output stall skips the crank holdoff and the startup animation: the lights are back in a fraction of a second |
 | Safe mode | A supply that cannot carry the lights (reset loop) | After three fault restarts in a row the LED current limit drops from 12 A to 4 A until the lights have run normally for 20 s |
@@ -119,6 +119,16 @@ active in the builds that run with Wi-Fi off (`esp32-s3-pcb`, `esp32-s3-pcb-head
 
 Brake or reverse also ends the startup animation at once, and it never starts while
 either is on.
+
+Second opinions (`fail_safe.h`), each doing nothing while the part it backs up works:
+
+| Backs up | How |
+|---|---|
+| The input task | Brake and reverse are also read directly on the render core. A line held for 60 ms counts even if the input task has stopped reporting it |
+| The brake animation and colour settings | A lamp in the brake state with no pixel lit for 0.4 s is painted solid in the brake colour (red if that colour has no red in it) |
+| Brightness settings and CAN brightness commands | Brightness never goes below the safety floor while brake, reverse or a turn signal is asked for |
+| The CAN controller's start-up | A failed start is retried in the background (after 5 s, doubling to once a minute), one short attempt at a time and never while brake or reverse is on |
+| The CAN controller's settings | A supply dip can reset the MCP2515 alone, leaving it silent in configuration mode. Its control register is checked every second and it is set up again within about 2 s |
 
 The count of fault restarts in a row lives in RTC memory, so it survives every reset
 except loss of power. The serial log prints the plan for each boot
@@ -276,9 +286,13 @@ pio device monitor         # open serial monitor (115200 baud)
 
 ### Custom PCB build
 
-The only main environment is `esp32-s3-pcb`; an unqualified build/upload selects
-the custom PCB pinout and enables its onboard MCP2515. Host tests use the
-separate `platformio-tests.ini` configuration.
+There is one build, `esp32-s3-pcb`: the custom PCB pinout with its onboard MCP2515,
+headless. The lights are driven by the optocoupler inputs and the CAN bus only; no
+Wi-Fi, settings page or OTA code is compiled or linked, and settings come from the
+dashboard over CAN. The Wi-Fi page and OTA sources (`wifi_server.cpp`,
+`firmware_update.cpp`) remain in the repository but are not built, so the sections
+on them below describe code that is not in the firmware. Host tests use the separate
+`platformio-tests.ini` configuration.
 It uses the same 21x5 top strip, 21x5 bottom strip, 17x10 main panel,
 380-LED-per-side buffers, serpentine mapping, mirroring, and animations as the
 original build:
@@ -424,6 +438,10 @@ colors rather than a physical optical simulation.
 
 ### WiFi tuning and profiles
 
+> **Not in the current firmware.** The one build is headless: this code is kept in
+> the repository but is not compiled. Settings come from the dashboard over CAN and
+> firmware is flashed over USB.
+
 - **Apply** uses the current form immediately without writing startup settings.
 - **Save** applies the form and remembers it across power cycles.
 - **Revert** restores the last saved settings and exits show mode.
@@ -466,6 +484,10 @@ six slots; `POST /api/profiles` accepts `action` (`save`, `load`, `delete`) and
 storage writes return an error instead of reporting success.
 
 ### Firmware updates over WiFi (OTA)
+
+> **Not in the current firmware.** The one build is headless: this code is kept in
+> the repository but is not compiled. Settings come from the dashboard over CAN and
+> firmware is flashed over USB. The `platformio-ota.ini` configuration was removed.
 
 First install this firmware once by USB using the **esp32-s3-pcb** environment.
 It adds both a browser updater and PlatformIO OTA. The existing 8 MB partition

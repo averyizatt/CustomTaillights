@@ -356,6 +356,15 @@ static constexpr uint32_t OUTPUT_STALL_MIN_FAILURES = 8;
 static constexpr unsigned long STABLE_RUN_MS = 20000;
 // After three fault restarts in a row: a current limit a weak supply can carry.
 static constexpr uint32_t LED_SAFE_MODE_BUDGET_MA = 4000;
+// Frames refused for this long, at least this many times: rebuild the LED
+// transport in place first. The reset above follows if that does not help.
+static constexpr unsigned long OUTPUT_REPAIR_MS = 150;
+static constexpr uint32_t OUTPUT_REPAIR_MIN_FAILURES = 4;
+// A brake or reverse line held this long is honoured from a direct pin reading,
+// even if the input task has stopped reporting it (fail_safe.h).
+static constexpr unsigned long RAW_BACKUP_HOLD_MS = 60;
+// A lamp in the brake state with no pixel lit for this long is painted directly.
+static constexpr unsigned long DARK_BRAKE_LIMIT_MS = 400;
 // Largest rise in estimated LED current from one frame to the next.
 static constexpr uint32_t LED_CURRENT_STEP_MA = 4000;
 static constexpr uint32_t LED_SAFE_MODE_STEP_MA = 1500;
