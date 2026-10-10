@@ -1,0 +1,79 @@
+# Builds the taillight controller firmware on every change and publishes it as the
+# "taillights-latest" release. The dash downloads it during Update now and installs it
+# over the CAN bus (README, "Firmware updates over CAN").
+name: Taillight firmware
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'platformio.ini'
+      - '.github/workflows/taillight-firmware.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: taillight-firmware
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: platformio-taillights-${{ hashFiles('platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Host tests
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc test/test_boot_safety/test_boot_safety.cpp -o /tmp/boot_safety && /tmp/boot_safety
+          g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -Itest/test_can_runtime/stubs -Isrc -Iinclude \
+            test/test_can_runtime/test_can_runtime.cpp src/canbus.cpp -o /tmp/can_runtime && /tmp/can_runtime
+          g++ -std=c++17 -Wall -Wextra -Werror -DCUSTOM_TAILLIGHTS_PCB=1 -Itest/test_led_transport/stubs -Itest/test_can_runtime/stubs -Isrc -Iinclude \
+            test/test_led_transport/test_led_transport.cpp src/led_transport.cpp -o /tmp/led_transport && /tmp/led_transport
+
+      # The build number the controller reports to the dash: the first eight hex digits of the commit.
+      - name: Build
+        run: |
+          BUILD=$(git rev-parse HEAD | cut -c1-8)
+          echo "BUILD=$BUILD" >> "$GITHUB_ENV"
+          PLATFORMIO_BUILD_FLAGS="-DTAILLIGHT_FW_BUILD=0x$BUILD" pio run -e esp32-s3-pcb
+
+      - name: Package
+        run: |
+          mkdir out
+          cp .pio/build/esp32-s3-pcb/firmware.bin out/taillights-firmware.bin
+          python3 - <<'EOF'
+          import hashlib, json, os, pathlib
+          data = pathlib.Path('out/taillights-firmware.bin').read_bytes()
+          assert 0 < len(data) <= 0x330000, len(data)   # Must fit one application slot.
+          manifest = {'build': os.environ['BUILD'], 'size': len(data),
+                      'sha256': hashlib.sha256(data).hexdigest(), 'commit': os.environ['GITHUB_SHA']}
+          pathlib.Path('out/taillights-firmware.json').write_text(json.dumps(manifest) + '\n')
+          print(manifest)
+          EOF
+
+      # The image goes up before its manifest: the dash only takes an image that matches the manifest it read.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view taillights-latest >/dev/null 2>&1 || gh release create taillights-latest \
+            --title "Taillight firmware (latest build)" --latest=false \
+            --notes "Built automatically from main. The dash downloads this during Update now and installs it over the CAN bus."
+          gh release upload taillights-latest out/taillights-firmware.bin --clobber
+          gh release upload taillights-latest out/taillights-firmware.json --clobber

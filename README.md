@@ -136,6 +136,29 @@ except loss of power. The serial log prints the plan for each boot
 count. Nothing changes on the CAN bus: a reset by the output guard or the hardware
 watchdog is reported with the existing watchdog fault code `0x05`.
 
+### Firmware updates over CAN
+After this firmware has been flashed once by USB, later versions are installed from the
+dash over the CAN bus (`include/can_contract/firmware_update.h`, shared with the dash
+and the sensor gateway; this controller is target 2).
+
+- A push to `main` builds the firmware on GitHub and publishes it as the
+  `taillights-latest` release. The dash downloads it during **Update now** and offers
+  **Install taillights firmware** under Dash management → Support.
+- **The lights come first.** A transfer does not start while brake, running, turn or
+  reverse is on, and is dropped the instant one comes on: the running firmware carries
+  on as if nothing happened. So: lights off, foot off the brake. The lamps stay dark
+  and the status LED is violet for the minute it takes.
+- The image goes into the spare application slot in CRC-checked blocks, is verified as
+  a whole before the restart, and starts **on trial**: if the dash has not confirmed
+  the new build within 90 seconds, or it hangs or crashes, the controller restarts
+  into the firmware it had before.
+- No frame is drawn during a transfer, so the hardware watchdog is fed by the transfer
+  itself; a transfer the dash abandons is dropped after 5 seconds.
+
+The two messages (0x680 from the dash, 0x681 back) are additive and were added for the
+gateway; nothing else on the bus changes. A build from the editor reports build
+`00000000`, so the dash offers the published build over it.
+
 ### Dual-core architecture
 Input polling runs at 1 ms on Core 0, completely independent of LED render time on Core 1. Inputs are exchanged between cores via atomic single-byte snapshots — no mutex or critical section needed.
 

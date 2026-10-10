@@ -56,6 +56,18 @@
 #include "power_ramp.h"
 #include "hw_watchdog.h"
 #include "fail_safe.h"
+#include <esp_ota_ops.h>
+#include <can_contract/firmware_update.h>
+
+// Identifies this build to the dash. The published firmware is built with the first
+// eight hex digits of its commit; a build from the editor reports 0.
+#ifndef TAILLIGHT_FW_BUILD
+#define TAILLIGHT_FW_BUILD 0
+#endif
+
+// A firmware received over CAN stays on trial until the dash confirms it (see loop()).
+// Without this the Arduino core would accept it the moment it starts.
+extern "C" bool verifyRollbackLater() { return true; }
 #include <esp_attr.h>
 
 // Preview state set by POST /api/preview in wifi_server.cpp.
@@ -98,6 +110,69 @@ static bool                g_stableNoted = false;
 static bool                g_repairTried = false;   // One in-place rebuild per stall, then the reset
 static fail_safe::HeldLevel g_rawBrake, g_rawReverse;
 static fail_safe::DarkLamp  g_darkDriver, g_darkPassenger;
+
+// ── Firmware update over CAN (can_contract/firmware_update.h) ────────────────
+// The image is written to the spare application slot; the running firmware is
+// untouched until the restart. Nothing is received while any light input is on.
+namespace fw = can_protocol::firmware;
+struct OtaFlash {
+    esp_ota_handle_t handle = 0;
+    const esp_partition_t* slot = nullptr;
+    bool open = false;
+    bool begin(uint32_t size) {
+        slot = esp_ota_get_next_update_partition(nullptr);
+        if (!slot || size > slot->size) return false;
+        // Sequential: each sector is erased as the writing reaches it, never one long pause.
+        open = esp_ota_begin(slot, OTA_WITH_SEQUENTIAL_WRITES, &handle) == ESP_OK;
+        return open;
+    }
+    bool write(const uint8_t* data, uint32_t length) { return open && esp_ota_write(handle, data, length) == ESP_OK; }
+    bool finish() {
+        if (!open) return false;
+        open = false;
+        // esp_ota_end checks the image's own checksum before it may be started.
+        return esp_ota_end(handle) == ESP_OK && esp_ota_set_boot_partition(slot) == ESP_OK;
+    }
+    void abort() { if (open) esp_ota_abort(handle); open = false; }
+    bool confirm() { return esp_ota_mark_app_valid_cancel_rollback() == ESP_OK; }
+};
+static OtaFlash g_otaFlash;
+static fw::Receiver<OtaFlash> g_updater(fw::TARGET_TAILLIGHT, TAILLIGHT_FW_BUILD, g_otaFlash);
+static unsigned long g_restartAtMs = 0;
+// A new firmware the dash has not confirmed within this time is given up: the
+// controller restarts into the firmware it had before.
+static constexpr unsigned long FW_TRIAL_MS = 90000;
+
+// Any of the light inputs, as the input task reports them.
+static bool lightInputsActive() {
+    return ((inputs.driverSnapshot() | inputs.passengerSnapshot()) & 0x0F) != 0;
+}
+
+static bool updateHook(const can_protocol::CanFrame& in, can_protocol::CanFrame& reply) {
+    // The lights come first: no transfer starts while brake, running, turn or reverse is on.
+    if (in.data[0] == fw::BEGIN && in.data[1] == fw::TARGET_TAILLIGHT
+        && in.data[5] == fw::MAGIC_0 && in.data[6] == fw::MAGIC_1 && lightInputsActive()) {
+        reply = fw::packAck(fw::TARGET_TAILLIGHT, fw::BEGIN, fw::STATUS_BUSY);
+        return true;
+    }
+    fw::Action action = fw::Action::NONE;
+    if (!g_updater.handle(in, reply, millis(), action)) return false;
+    if (action == fw::Action::STARTED) {
+        Serial.printf("[update] firmware transfer started: %lu bytes\n", static_cast<unsigned long>(g_updater.size()));
+        // Lamps dark and the status LED violet for the transfer: no frame is drawn until it ends.
+        fill_solid(ledsDriver, LEDS_PER_SIDE, CRGB::Black);
+        fill_solid(ledsPassenger, LEDS_PER_SIDE, CRGB::Black);
+        statusLed.pixel = CRGB(90, 0, 140);
+        ledOutputShow(true);
+    }
+    if (action == fw::Action::STOPPED) Serial.println(F("[update] transfer stopped; running firmware kept"));
+    if (action == fw::Action::CONFIRMED) Serial.println(F("[update] new firmware confirmed by the dash"));
+    if (action == fw::Action::RESTART) {
+        Serial.println(F("[update] firmware received and checked; restarting into it"));
+        g_restartAtMs = (millis() + 300) | 1;  // After the answer has left. Never 0, which means "not due".
+    }
+    return true;
+}
 
 // Brake or reverse, read straight from the pins (usable before the input task runs).
 static bool safetyInputActive() {
@@ -233,6 +308,14 @@ static void logAndCountReset() {
 #else
     g_bootPlan = {cause, true, g_settings.startup_anim != 0, false, false, 0};
 #endif
+    {
+        esp_ota_img_states_t imageState;
+        const esp_partition_t* running = esp_ota_get_running_partition();
+        g_updater.setOnTrial(running && esp_ota_get_state_partition(running, &imageState) == ESP_OK
+                             && imageState == ESP_OTA_IMG_PENDING_VERIFY);
+        Serial.printf("  Firmware   - build %08lX%s\n", static_cast<unsigned long>(TAILLIGHT_FW_BUILD),
+                      g_updater.onTrial() ? " (new: on trial until the dash confirms it)" : "");
+    }
     Serial.printf("  Boot plan  - fault restarts in a row: %u, holdoff: %s, startup animation: %s%s\n",
                   g_bootPlan.streak, g_bootPlan.crankHoldoff ? "yes" : "no",
                   g_bootPlan.startupAnimation ? "yes" : "no",
@@ -1042,6 +1125,7 @@ void setup() {
     // setup() from ever reaching the input/render loop.
     if (CAN_ENABLED) {
         Serial.println(F("[boot] init CAN"));
+        canBus.setUpdateHook(updateHook);
         const bool canReady = canBus.begin();
         Serial.printf("[boot] CAN init returned: %s\n", canReady ? "PASS" : "FAIL");
 
@@ -1108,6 +1192,29 @@ void loop() {
     // Feed the hardware Task Watchdog.  If this call stops arriving within
     // WDT_TIMEOUT_S seconds the MCU performs a clean panic reset.
     esp_task_wdt_reset();
+
+    // ── Firmware update over CAN ─────────────────────────────────────────────
+    if (g_restartAtMs && static_cast<long>(millis() - g_restartAtMs) >= 0) ESP.restart();
+    if (g_updater.active()) {
+        // Nothing but the transfer: a frame arrives every millisecond. No picture is drawn,
+        // so the hardware watchdog is fed here; the transfer has its own 5 s idle limit.
+        hwWatchdogFeed();
+        if (lightInputsActive()) {
+            // A light is wanted: the transfer is dropped at once and the lights carry on.
+            g_updater.cancel();
+            canBus.sendUpdateReply(fw::packAck(fw::TARGET_TAILLIGHT, fw::ABORT, fw::STATUS_BUSY));
+            Serial.println(F("[update] a light input came on; transfer dropped, running firmware kept"));
+        } else {
+            canBus.serviceUpdate();
+            if (g_updater.expired(millis())) Serial.println(F("[update] transfer abandoned: the dash went quiet"));
+            return;
+        }
+    }
+    if (g_updater.onTrial() && millis() >= FW_TRIAL_MS) {
+        Serial.println(F("[update] new firmware not confirmed by the dash; going back to the previous one"));
+        esp_ota_mark_app_invalid_rollback_and_reboot();
+        g_updater.setOnTrial(false);  // Only reached if there is nothing to go back to.
+    }
     serviceOutputGuard();
 
 #if TAILLIGHT_WIFI_ENABLED

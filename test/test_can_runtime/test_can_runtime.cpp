@@ -149,7 +149,58 @@ void test_integrated_modes_and_expiry() {
     assert(bus.hasCustomAnim());
     tick(bus, 5106); assert(!bus.hasCustomAnim());
 }
+static int hookCalls = 0;
+static bool testHook(const can_protocol::CanFrame& in, can_protocol::CanFrame& reply) {
+    ++hookCalls;
+    if (!(in.data[0] & 0x80)) return false;                // Data frames are not answered.
+    reply = can_protocol::firmware::packAck(2, in.data[0], 0);
+    return true;
+}
+void test_firmware_update_frames_reach_the_hook_and_are_answered_at_once() {
+    namespace fw = can_protocol::firmware;
+    resetFake(); hookCalls = 0;
+    CANBus bus; bus.setUpdateHook(testHook); assert(bus.begin());
+    auto push = [](const can_protocol::CanFrame& source) {
+        can_frame frame; frame.can_id = source.id; frame.can_dlc = source.dlc;
+        for (int i = 0; i < 8; ++i) frame.data[i] = source.data[i];
+        MCP2515::incoming.push_back(frame);
+    };
+    push(fw::packQuery(2));
+    tick(bus, 2);
+    assert(hookCalls == 1 && MCP2515::sent.size() == 1);
+    assert(MCP2515::sent[0].can_id == fw::ID_REPLY && MCP2515::sent[0].data[0] == fw::ACK && MCP2515::sent[0].data[2] == fw::QUERY);
+    // Telemetry already waiting in the transmit buffer does not hold an answer back.
+    registers[0x30] = 0;
+    tick(bus, 100);                                         // 100 ms state broadcast goes out...
+    assert(registers[0x30] & 0x08);
+    push(fw::packBegin(2, 1000));
+    tick(bus, 102);                                         // ...and the answer still leaves on this pass.
+    assert(MCP2515::sent.back().can_id == fw::ID_REPLY && MCP2515::sent.back().data[2] == fw::BEGIN);
+    // During a transfer everything waiting is read in one pass, data frames included.
+    const uint8_t bytes[7] = {1, 2, 3, 4, 5, 6, 7};
+    for (uint8_t i = 0; i < 20; ++i) push(fw::packData(i, bytes, 7));
+    push(fw::packBlockEnd(2, 0, 0x1234, 20));
+    const int before = hookCalls;
+    const auto sent = MCP2515::sent.size();
+    registers[0x30] = 0;
+    bus.serviceUpdate();
+    assert(hookCalls == before + 21 && MCP2515::incoming.empty());
+    assert(MCP2515::sent.size() == sent + 1 && MCP2515::sent.back().data[2] == fw::BLOCK_END);
+    // A frame of the wrong length never reaches the hook, and lighting commands are untouched.
+    can_frame odd; odd.can_id = fw::ID_COMMAND; odd.can_dlc = 3;
+    MCP2515::incoming.push_back(odd);
+    can_frame command; command.can_id = CAN_ID_COMMAND; command.can_dlc = 2; command.data[0] = 0x01; command.data[1] = 55;
+    MCP2515::incoming.push_back(command);
+    registers[0x30] = 0;
+    tick(bus, 200);
+    assert(hookCalls == before + 21 && bus.requestedBrightness(128) == 55);
+    // Without a hook the frames are simply ignored.
+    resetFake(); CANBus plain; assert(plain.begin());
+    push(fw::packQuery(2)); tick(plain, 2);
+    assert(MCP2515::sent.empty());
+}
 int main() {
+    test_firmware_update_frames_reach_the_hook_and_are_answered_at_once();
     test_integrated_modes_and_expiry();
     test_missing_controller_stays_quiet();
     test_controller_that_starts_late_is_brought_up();

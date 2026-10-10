@@ -66,11 +66,11 @@ bool CANBus::_initMCP() {
     if (_mcp.setFilterMask(MCP2515::MASK0, false, 0x7FF) != MCP2515::ERROR_OK
         || _mcp.setFilterMask(MCP2515::MASK1, false, 0x7FF) != MCP2515::ERROR_OK
         || _mcp.setFilter(MCP2515::RXF0, false, CAN_ID_COMMAND) != MCP2515::ERROR_OK
-        || _mcp.setFilter(MCP2515::RXF1, false, CAN_ID_COMMAND) != MCP2515::ERROR_OK
+        || _mcp.setFilter(MCP2515::RXF1, false, can_protocol::firmware::ID_COMMAND) != MCP2515::ERROR_OK
         || _mcp.setFilter(MCP2515::RXF2, false, CAN_ID_COMMAND) != MCP2515::ERROR_OK
         || _mcp.setFilter(MCP2515::RXF3, false, CAN_ID_COMMAND) != MCP2515::ERROR_OK
         || _mcp.setFilter(MCP2515::RXF4, false, CAN_ID_COMMAND) != MCP2515::ERROR_OK
-        || _mcp.setFilter(MCP2515::RXF5, false, CAN_ID_COMMAND) != MCP2515::ERROR_OK
+        || _mcp.setFilter(MCP2515::RXF5, false, can_protocol::firmware::ID_COMMAND) != MCP2515::ERROR_OK
         || _mcp.setNormalMode() != MCP2515::ERROR_OK) {
         if (!_quietInit) Serial.println(F("[CAN] configuration failed; retrying in the background"));
         return false;
@@ -219,7 +219,7 @@ void CANBus::tick(LightState driverState, LightState passengerState,
     // RX stays available during TX backoff. Bound processing to two frames.
     struct can_frame frame;
     for (uint8_t i = 0; i < 2 && _mcp.readMessage(&frame) == MCP2515::ERROR_OK; ++i) {
-        _processFrame(frame);
+        _dispatch(frame);
     }
     if (nowMs - _lastBroadcastMs >= CAN_BROADCAST_INTERVAL_MS) {
         _lastBroadcastMs = nowMs;
@@ -232,6 +232,42 @@ void CANBus::tick(LightState driverState, LightState passengerState,
     }
     _drainQueue();
 #endif
+}
+
+// Both receive buffers accept lighting commands and firmware-update frames, nothing else.
+void CANBus::_dispatch(const struct can_frame& frame) {
+    if (frame.can_id != can_protocol::firmware::ID_COMMAND) { _processFrame(frame); return; }
+    if (!_updateHook || frame.can_dlc != 8) return;
+    can_protocol::CanFrame in{}, reply{};
+    in.id = static_cast<uint16_t>(frame.can_id);
+    in.dlc = 8;
+    for (uint8_t i = 0; i < 8; ++i) in.data[i] = frame.data[i];
+    if (_updateHook(in, reply)) sendUpdateReply(reply);
+}
+
+void CANBus::serviceUpdate() {
+    if (!_online) return;
+    if (_mcp.getErrorFlags() & 0xC0) _mcp.clearRXnOVRFlags();
+    struct can_frame frame;
+    for (uint8_t i = 0; i < 32 && _mcp.readMessage(&frame) == MCP2515::ERROR_OK; ++i) _dispatch(frame);
+}
+
+// Update answers do not wait for the telemetry slot or its retry pause. A frame still
+// in the transmit buffer gets a moment to leave, then is dropped: the dash asks again
+// for an answer it did not get.
+void CANBus::sendUpdateReply(const can_protocol::CanFrame& reply) {
+    if (!_online) return;
+    for (uint16_t tries = 0; (_readRegister(REG_TXB0CTRL) & TXREQ) && tries < 400; ++tries) {
+        if (tries == 399) _modifyRegister(REG_TXB0CTRL, TXREQ, 0);
+    }
+    struct can_frame frame{};
+    frame.can_id = reply.id;
+    frame.can_dlc = reply.dlc;
+    for (uint8_t i = 0; i < reply.dlc; ++i) frame.data[i] = reply.data[i];
+    if (_mcp.sendMessage(MCP2515::TXB0, &frame) == MCP2515::ERROR_OK) {
+        _txPending = true;
+        _txStartedMs = millis();
+    }
 }
 
 #if TAILLIGHT_CAN_SETTINGS

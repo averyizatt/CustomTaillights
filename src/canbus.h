@@ -24,6 +24,7 @@
 #include "can_protocol.h"
 #include "can_state.h"
 #include "animations.h"
+#include <can_contract/firmware_update.h>
 
 class CANBus {
 public:
@@ -55,6 +56,16 @@ public:
     bool isOnline() const { return _online && !_busOff; }
     // Times the MCP2515 was brought back after failing to start or losing its settings.
     uint16_t repairs() const { return _repairs; }
+
+    // ── Firmware update over CAN (can_contract/firmware_update.h) ─────────────
+    // Frames on the update ID are handed to this hook; an answer it fills in is
+    // sent at once, ahead of telemetry. The transfer itself lives in main.cpp.
+    using UpdateHook = bool (*)(const can_protocol::CanFrame& in, can_protocol::CanFrame& reply);
+    void setUpdateHook(UpdateHook hook) { _updateHook = hook; }
+    // Call instead of tick() while a transfer is open: reads everything waiting,
+    // with no pause between polls, and sends nothing but update answers.
+    void serviceUpdate();
+    void sendUpdateReply(const can_protocol::CanFrame& reply);
 
     // ── Custom animation (Cmd 0x04) ───────────────────────────────────────────
     // True after a Cmd 0x04 is received and while the animation is running.
@@ -89,6 +100,8 @@ private:
 
     // RX
     void _processFrame(const struct can_frame& frame);
+    void _dispatch(const struct can_frame& frame);
+    UpdateHook _updateHook = nullptr;
 
     // Override state
     bool       _hasOverride   = false;
