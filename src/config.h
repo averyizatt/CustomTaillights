@@ -347,6 +347,9 @@ static constexpr unsigned long CRANK_HOLDOFF_MS = 1500;
 // The task watchdog is armed from the first lines of setup() with this longer
 // allowance, then tightened to WDT_TIMEOUT_S once the main loop starts.
 static constexpr uint32_t WDT_BOOT_TIMEOUT_S = 8;
+// RTC watchdog from the first instant of the program (a constructor, before the Arduino
+// core's start-up and setup()) until the lamps are driven and it narrows to the next one.
+static constexpr uint32_t EARLY_WDT_MS = 10000;
 // RTC watchdog: full chip reset when no frame has reached both lamps for this long.
 static constexpr uint32_t OUTPUT_WDT_TIMEOUT_MS = 5000;
 // Frames attempted and refused for this long, at least this many times: reset at once.

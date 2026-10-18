@@ -82,6 +82,10 @@ public:
     //   data0/1  : fault-specific payload bytes (0 if unused)
     void reportFault(uint8_t code, uint8_t severity,
                      uint8_t data0 = 0, uint8_t data1 = 0);
+    // The same, through the transmit queue, so several in a row are all sent.
+    void queueFault(uint8_t code, uint8_t severity, uint8_t data0 = 0, uint8_t data1 = 0);
+    // A frame from the dash (a lighting command or a firmware query) has arrived since start-up.
+    bool dashHeard() const { return _dashHeard; }
 
     // When the driver-side animation began (millis). Reported as the animation
     // phase in the 0x103 status so a dashboard mirror can stay in step.
@@ -91,6 +95,7 @@ private:
     MCP2515 _mcp{PIN_CAN_CS};
 
     bool _online = false;
+    bool _dashHeard = false;
 
     // TX
     unsigned long _lastBroadcastMs = 0;

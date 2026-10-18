@@ -64,6 +64,34 @@ static void test_a_reset_for_a_stalled_output_is_named_on_the_next_boot() {
     assert(boot_guard::onBoot(record, Cause::Panic, true).streak == 0);
 }
 
+static void test_power_on_and_brownout_start_once_more_on_settled_power() {
+    boot_guard::Record record;
+    std::memset(&record, 0xC3, sizeof(record));
+    auto plan = boot_guard::onBoot(record, Cause::PowerOn, true);
+    assert(plan.settleRestart && plan.crankHoldoff && !plan.settled);
+    boot_guard::markSettleRestart(record, plan.cause);
+    plan = boot_guard::onBoot(record, Cause::Software, true);      // The restart it asked for
+    assert(plan.settled && !plan.settleRestart && !plan.crankHoldoff && plan.startupAnimation);
+    assert(plan.cause == Cause::PowerOn && plan.streak == 0 && !plan.safeMode);
+    plan = boot_guard::onBoot(record, Cause::Software, true);      // The mark is used once: no loop
+    assert(!plan.settled && !plan.settleRestart && plan.crankHoldoff);
+
+    // A brownout: the same, without the startup animation, and it still counts as a fault.
+    plan = boot_guard::onBoot(record, Cause::Brownout, true);
+    assert(plan.settleRestart && plan.crankHoldoff && plan.streak == 1);
+    boot_guard::markSettleRestart(record, plan.cause);
+    plan = boot_guard::onBoot(record, Cause::Software, true);
+    assert(plan.settled && plan.cause == Cause::Brownout && !plan.crankHoldoff && !plan.startupAnimation && plan.streak == 1);
+
+    // A fault restart does not do it: the lights come straight back.
+    assert(!boot_guard::onBoot(record, Cause::Watchdog, true).settleRestart);
+    // Power lost between the mark and the restart: the next start is a plain power-on.
+    boot_guard::markSettleRestart(record, Cause::PowerOn);
+    plan = boot_guard::onBoot(record, Cause::Panic, true);
+    assert(!plan.settled && plan.cause == Cause::Panic);
+    assert(!boot_guard::onBoot(record, Cause::Software, true).settled);
+}
+
 static void test_frames_reaching_both_lamps_feed_the_watchdog() {
     OutputGuard guard;
     uint32_t done[2] = {0, 0}, failed[2] = {0, 0};
@@ -180,6 +208,7 @@ int main() {
     test_a_fault_restart_goes_straight_back_to_the_lights();
     test_three_fault_restarts_in_a_row_select_safe_mode_until_a_stable_run();
     test_a_reset_for_a_stalled_output_is_named_on_the_next_boot();
+    test_power_on_and_brownout_start_once_more_on_settled_power();
     test_frames_reaching_both_lamps_feed_the_watchdog();
     test_a_lamp_that_keeps_refusing_frames_is_a_stall_and_a_quiet_pause_is_not();
     test_led_current_rises_in_steps_and_falls_at_once();

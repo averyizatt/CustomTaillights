@@ -236,6 +236,7 @@ void CANBus::tick(LightState driverState, LightState passengerState,
 
 // Both receive buffers accept lighting commands and firmware-update frames, nothing else.
 void CANBus::_dispatch(const struct can_frame& frame) {
+    _dashHeard = true;   // The filters pass only the dash's frames.
     if (frame.can_id != can_protocol::firmware::ID_COMMAND) { _processFrame(frame); return; }
     if (!_updateHook || frame.can_dlc != 8) return;
     can_protocol::CanFrame in{}, reply{};
@@ -356,6 +357,22 @@ void CANBus::reportFault(uint8_t code, uint8_t severity, uint8_t data0, uint8_t 
     frame.data[2] = data0;
     frame.data[3] = data1;
     _sendFrame(frame);
+}
+
+void CANBus::queueFault(uint8_t code, uint8_t severity, uint8_t data0, uint8_t data1) {
+#if TAILLIGHT_CAN_SETTINGS
+    Serial.printf("[FAULT] code=0x%02X sev=%u d0=%u d1=%u (queued)\n", code, severity, data0, data1);
+    can_protocol::CanFrame frame{};
+    frame.id = CAN_ID_FAULT;
+    frame.dlc = 4;
+    frame.data[0] = code;
+    frame.data[1] = severity;
+    frame.data[2] = data0;
+    frame.data[3] = data1;
+    _enqueue(frame);
+#else
+    reportFault(code, severity, data0, data1);
+#endif
 }
 
 void CANBus::_processFrame(const struct can_frame& frame) {

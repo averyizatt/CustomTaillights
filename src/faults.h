@@ -35,6 +35,18 @@ static constexpr uint8_t FAULT_WDT_RESET        = 0x05;  // watchdog reset on pr
 static constexpr uint8_t FAULT_PANIC_RESET      = 0x06;  // panic / exception reset
 static constexpr uint8_t FAULT_BROWNOUT_RESET   = 0x07;  // brownout / power-loss reset
 
+// Each start, for the dash's record (severity INFO): sent when CAN comes up and again
+// when the dash is first heard, since the dash starts later than the lights.
+//   data0 = ESP-IDF reset reason (esp_reset_reason_t: 1 power-on, 3 software, 4 panic,
+//           5/6/7 watchdogs, 9 brownout, 14 power glitch, 15 CPU lock-up)
+//   data1 = BOOT_INFO_* flags
+static constexpr uint8_t FAULT_BOOT_INFO        = 0x08;
+static constexpr uint8_t BOOT_INFO_SETTLED_POWER_ON = 0x01;  // This start followed the restart after a power-on
+static constexpr uint8_t BOOT_INFO_SETTLED_BROWNOUT = 0x02;  // ... after a brownout
+static constexpr uint8_t BOOT_INFO_SAFE_MODE        = 0x04;  // Reduced LED current (fault restarts in a row)
+static constexpr uint8_t BOOT_INFO_ON_TRIAL         = 0x08;  // New firmware, not yet confirmed by the dash
+static constexpr uint8_t BOOT_INFO_SAFETY_INPUT     = 0x10;  // Brake or reverse was on: the settle restart was skipped
+
 // ── Severity levels ──────────────────────────────────────────────────────────
 static constexpr uint8_t FAULT_SEV_INFO     = 0x00;
 static constexpr uint8_t FAULT_SEV_WARNING  = 0x01;

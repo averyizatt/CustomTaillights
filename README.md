@@ -110,6 +110,8 @@ independent of the one before it.
 
 | Layer | Catches | Action |
 |---|---|---|
+| Start once more on settled power (`boot_guard.h`) | A start on a supply still settling after a power-on or brownout: in the car the lamps sometimes froze at key-on until the board's button was pressed | After the crank holdoff the controller restarts itself once and starts for real on the settled supply (about 0.3 s more at key-on). Skipped while brake or reverse is on |
+| RTC watchdog from the first instant of the program (a constructor, then the first line of `setup()`) | A hang before the other watchdogs exist: the Arduino core's own start-up, the serial port, the settings in flash | System reset after 10 s, until the lamps are driven and the 5 s watchdog below takes over |
 | Task watchdog from the first lines of `setup()` (8 s while booting, then 3 s) | A hang in the crank holdoff, the startup animation or CAN start-up, which used to have no watchdog at all | Panic reset |
 | Output guard (`output_guard.h`) | The LED transport refusing frames while everything else runs: a transfer that never completes blocks every later frame, and every other watchdog stays satisfied | After 0.15 s the transport is rebuilt in place, with no restart; if frames are still refused at 0.5 s, a full reset |
 | RTC hardware watchdog (`hw_watchdog.c`) | Anything else, including a processor that is not running code. It is fed only by frames that reached **both** lamps | System reset after 5 s without one; if that does not help, a reset that also restarts the RTC, as the reset button does |
@@ -133,8 +135,12 @@ Second opinions (`fail_safe.h`), each doing nothing while the part it backs up w
 The count of fault restarts in a row lives in RTC memory, so it survives every reset
 except loss of power. The serial log prints the plan for each boot
 (`Boot plan - fault restarts in a row: ...`) and the fault log gains a `LED output`
-count. Nothing changes on the CAN bus: a reset by the output guard or the hardware
-watchdog is reported with the existing watchdog fault code `0x05`.
+count. A reset by the output guard or the hardware watchdog is reported with the existing
+watchdog fault code `0x05`. Every start is reported on 0x102 with code `0x08` (severity
+info; data0 = the ESP-IDF reset reason, data1 = flags: settled after a power-on or a
+brownout, safe mode, firmware on trial, settle restart skipped for the brake), when CAN
+comes up and again when the dash is first heard, so the dash's record shows each start
+even though it boots later than the lights. Earlier boot faults are re-sent with it.
 
 ### Firmware updates over CAN
 After this firmware has been flashed once by USB, later versions are installed from the

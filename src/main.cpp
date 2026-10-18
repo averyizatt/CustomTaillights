@@ -110,6 +110,16 @@ static bool                g_stableNoted = false;
 static bool                g_repairTried = false;   // One in-place rebuild per stall, then the reset
 static fail_safe::HeldLevel g_rawBrake, g_rawReverse;
 static fail_safe::DarkLamp  g_darkDriver, g_darkPassenger;
+static bool                g_bootToldDash = false;  // The start report has reached a listening dash
+static void reportStart();
+
+#if TAILLIGHT_OUTPUT_GUARD
+// The RTC watchdog from the first instant of the program: global constructors run before
+// the Arduino core starts and calls setup(), so a hang anywhere from here on ends in a
+// reset, never in lamps frozen until someone presses the button. setup() arms it again
+// (in case the system start-up turned it off) and narrows it once the lamps are driven.
+__attribute__((constructor)) static void armEarlyHardwareWatchdog() { hwWatchdogBegin(EARLY_WDT_MS); }
+#endif
 
 // ── Firmware update over CAN (can_contract/firmware_update.h) ────────────────
 // The image is written to the spare application slot; the running firmware is
@@ -979,6 +989,9 @@ static uint32_t measureFrame() {
 
 // ---------------------------------------------------------------------------
 void setup() {
+#if TAILLIGHT_OUTPUT_GUARD
+    hwWatchdogBegin(EARLY_WDT_MS);
+#endif
     Serial.begin(115200);
     Serial.printf("[boot] LED outputs: driver GPIO%d, passenger GPIO%d, spare GPIO%d\n",
                   PIN_LED_DRIVER, PIN_LED_PASSENGER, PIN_LED_AUX);
@@ -1049,6 +1062,22 @@ void setup() {
     // Initialise optocoupler inputs (sets pin modes — must run before self-test)
     Serial.println(F("[boot] init inputs"));
     inputs.begin();
+#if TAILLIGHT_OUTPUT_GUARD
+    // Start once more, now that the supply has had the holdoff to settle: the whole chip
+    // and the CAN controller come up again on steady power (boot_guard.h). Not while
+    // brake or reverse is on: those lights are wanted now, not after another start.
+    // (After inputs.begin(): the brake and reverse pins are read as inputs only from there.)
+    if (g_bootPlan.settleRestart) {
+        if (safetyInputActive()) {
+            Serial.println(F("[boot] brake or reverse on - no settle restart"));
+        } else {
+            Serial.println(F("[boot] restarting once to start on the settled supply"));
+            boot_guard::markSettleRestart(g_bootRecord, g_bootPlan.cause);
+            Serial.flush();
+            esp_restart();
+        }
+    }
+#endif
 
     // ── WiFi + HTTP server ────────────────────────────────────────────────────
     // Bring WiFi up before any optional startup animations, CAN probing, or
@@ -1130,29 +1159,9 @@ void setup() {
         Serial.printf("[boot] CAN init returned: %s\n", canReady ? "PASS" : "FAIL");
 
         // ── Boot fault reporting over CAN ───────────────────────────────────
-        // Faults detected before CAN was up are reported here as one-shots.
-        switch (g_bootReason) {
-            case ESP_RST_TASK_WDT:
-            case ESP_RST_INT_WDT:
-            case ESP_RST_WDT:
-                canBus.reportFault(FAULT_WDT_RESET, FAULT_SEV_WARNING,
-                                   (uint8_t)(g_bootFaultCount & 0xFF));
-                break;
-            case ESP_RST_PANIC:
-                canBus.reportFault(FAULT_PANIC_RESET, FAULT_SEV_CRITICAL,
-                                   (uint8_t)(g_bootFaultCount & 0xFF));
-                break;
-            case ESP_RST_BROWNOUT:
-                canBus.reportFault(FAULT_BROWNOUT_RESET, FAULT_SEV_WARNING,
-                                   (uint8_t)(g_bootFaultCount & 0xFF));
-                break;
-            default:
-                break;
-        }
-        if (g_stuckDriver != 0 || g_stuckPassenger != 0) {
-            canBus.reportFault(FAULT_INPUT_STUCK_BOOT, FAULT_SEV_WARNING,
-                               g_stuckDriver, g_stuckPassenger);
-        }
+        // Faults detected before CAN was up, and what this start was. Sent now and
+        // again when the dash is first heard (loop()): it starts later than the lights.
+        reportStart();
     } else {
         Serial.println(F("[boot] CAN disabled"));
     }
@@ -1183,6 +1192,34 @@ void setup() {
     // ────────────────────────────────────────────────────────────────────────
 
     Serial.println(F("[taillight] ready — entering main loop"));
+}
+
+// What this start was and the faults before it, on 0x102 (faults.h).
+static void reportStart() {
+    switch (g_bootReason) {
+        case ESP_RST_TASK_WDT:
+        case ESP_RST_INT_WDT:
+        case ESP_RST_WDT:
+            canBus.queueFault(FAULT_WDT_RESET, FAULT_SEV_WARNING, (uint8_t)(g_bootFaultCount & 0xFF));
+            break;
+        case ESP_RST_PANIC:
+            canBus.queueFault(FAULT_PANIC_RESET, FAULT_SEV_CRITICAL, (uint8_t)(g_bootFaultCount & 0xFF));
+            break;
+        case ESP_RST_BROWNOUT:
+            canBus.queueFault(FAULT_BROWNOUT_RESET, FAULT_SEV_WARNING, (uint8_t)(g_bootFaultCount & 0xFF));
+            break;
+        default:
+            break;
+    }
+    if (g_stuckDriver != 0 || g_stuckPassenger != 0) {
+        canBus.queueFault(FAULT_INPUT_STUCK_BOOT, FAULT_SEV_WARNING, g_stuckDriver, g_stuckPassenger);
+    }
+    uint8_t flags = 0;
+    if (g_bootPlan.settled) flags |= g_bootPlan.cause == boot_guard::Cause::Brownout ? BOOT_INFO_SETTLED_BROWNOUT : BOOT_INFO_SETTLED_POWER_ON;
+    if (g_bootPlan.safeMode) flags |= BOOT_INFO_SAFE_MODE;
+    if (g_updater.onTrial()) flags |= BOOT_INFO_ON_TRIAL;
+    if (g_bootPlan.settleRestart) flags |= BOOT_INFO_SAFETY_INPUT;   // Still set: it was skipped for the brake
+    canBus.queueFault(FAULT_BOOT_INFO, FAULT_SEV_INFO, static_cast<uint8_t>(g_bootReason), flags);
 }
 
 // ---------------------------------------------------------------------------
@@ -1216,6 +1253,10 @@ void loop() {
         g_updater.setOnTrial(false);  // Only reached if there is nothing to go back to.
     }
     serviceOutputGuard();
+    if (CAN_ENABLED && !g_bootToldDash && canBus.dashHeard()) {
+        g_bootToldDash = true;
+        reportStart();
+    }
 
 #if TAILLIGHT_WIFI_ENABLED
     // Process any pending HTTP requests from the web UI.
