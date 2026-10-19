@@ -165,6 +165,11 @@ static bool updateHook(const can_protocol::CanFrame& in, can_protocol::CanFrame&
         reply = fw::packAck(fw::TARGET_TAILLIGHT, fw::BEGIN, fw::STATUS_BUSY);
         return true;
     }
+    // A restart asked for by the dash: never while brake, running, turn or reverse is on.
+    if (in.data[0] == fw::RESTART && in.data[1] == fw::TARGET_TAILLIGHT && lightInputsActive()) {
+        reply = fw::packAck(fw::TARGET_TAILLIGHT, fw::RESTART, fw::STATUS_BUSY);
+        return true;
+    }
     fw::Action action = fw::Action::NONE;
     if (!g_updater.handle(in, reply, millis(), action)) return false;
     if (action == fw::Action::STARTED) {
@@ -178,7 +183,8 @@ static bool updateHook(const can_protocol::CanFrame& in, can_protocol::CanFrame&
     if (action == fw::Action::STOPPED) Serial.println(F("[update] transfer stopped; running firmware kept"));
     if (action == fw::Action::CONFIRMED) Serial.println(F("[update] new firmware confirmed by the dash"));
     if (action == fw::Action::RESTART) {
-        Serial.println(F("[update] firmware received and checked; restarting into it"));
+        Serial.println(g_updater.active() || in.data[0] != fw::RESTART ? F("[update] firmware received and checked; restarting into it")
+                                                                        : F("[update] restart asked for by the dash"));
         g_restartAtMs = (millis() + 300) | 1;  // After the answer has left. Never 0, which means "not due".
     }
     return true;
