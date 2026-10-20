@@ -19,7 +19,10 @@ static constexpr unsigned long CAN_HEALTH_MS = 1000;
 static constexpr uint8_t REG_CANCTRL = 0x0F;
 static constexpr uint8_t REG_TXB0CTRL = 0x30;
 static constexpr uint8_t TXREQ = 0x08;
-static constexpr uint8_t TX_ERRORS = 0x70; // ABTF, MLOA, TXERR
+// TXERR only: a bus error, such as nobody acknowledging. A frame that lost arbitration
+// (ABTF + MLOA) is ordinary on a shared bus and is just dropped in one-shot mode; holding
+// off for it paused sending for a second or more after every collision.
+static constexpr uint8_t TX_ERRORS = 0x10;
 
 // The library hides register access. These two bounded transactions let us
 // enable one-shot TX and inspect/abort it without polling loops or delays.
