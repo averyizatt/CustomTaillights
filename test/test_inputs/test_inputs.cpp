@@ -35,13 +35,36 @@ int main() {
         assert(physicalPreviewBlocked(c.driver, c.passenger) == c.blocksPreview);
         testLevels[c.pin] = HIGH;
         settle(inputs);
+        if (c.pin == 7) {  // Running is held through dropouts before it goes off.
+            assert(inputs.driverSnapshot() == 2 && inputs.passengerSnapshot() == 2);
+            testMillis += RUNNING_RELEASE_MS; inputs.update();
+        }
         assert(inputs.driverSnapshot() == 0 && inputs.passengerSnapshot() == 0);
     }
+    // A loose running-light wire: dropouts shorter than the hold never blink it off.
+    testLevels[7] = LOW; settle(inputs);
+    assert(inputs.driverSnapshot() == 2 && inputs.passengerSnapshot() == 2);
+    for (unsigned long gap : {10ul, 200ul, 900ul, RUNNING_RELEASE_MS - 10}) {
+        testLevels[7] = HIGH; inputs.update();
+        testMillis += gap; inputs.update();
+        assert(inputs.driverSnapshot() == 2 && inputs.passengerSnapshot() == 2);
+        testLevels[7] = LOW; inputs.update();
+        testMillis += 5; inputs.update();
+        assert(inputs.driverSnapshot() == 2);
+    }
+    // Switched off for real: off once the hold has passed, and brake still works meanwhile.
+    testLevels[7] = HIGH; inputs.update();
+    testLevels[15] = LOW; settle(inputs);
+    assert(inputs.driverSnapshot() == 3);
+    testLevels[15] = HIGH; settle(inputs);
+    assert(inputs.driverSnapshot() == 2);
+    testMillis += RUNNING_RELEASE_MS; inputs.update();
+    assert(inputs.driverSnapshot() == 0 && inputs.passengerSnapshot() == 0);
     // A brief brake pulse must not survive the existing 5 ms debounce.
     testLevels[15] = LOW; inputs.update();
     testMillis += 4; inputs.update();
     assert(inputs.driverSnapshot() == 0);
     testLevels[15] = HIGH; settle(inputs);
     assert(inputs.driverSnapshot() == 0);
-    std::cout << "Active-low PCB mapping, idle preview eligibility, release and debounce tests passed\n";
+    std::cout << "Active-low PCB mapping, idle preview eligibility, release, debounce and running-light hold tests passed\n";
 }

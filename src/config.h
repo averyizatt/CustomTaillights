@@ -203,6 +203,10 @@ static constexpr unsigned long DEBOUNCE_FAST_MS =  5;  // brake, reverse — 5 m
                                                         // imperceptible but rejects
                                                         // automotive contact bounce
 static constexpr unsigned long DEBOUNCE_RUNNING_MS = 35; // extra filtering for noisy running-light feeds
+// Running lights go off only after the input has been off this long, so a loose
+// connection that drops out for a moment does not blink them off and on. Coming
+// on still takes DEBOUNCE_RUNNING_MS. Brake, turn and reverse are not held.
+static constexpr unsigned long RUNNING_RELEASE_MS = 1500;
 
 // Turn / hazard blink validation.  A steady ON turn input is not a blink; it
 // must keep producing transitions in the expected automotive flasher range.

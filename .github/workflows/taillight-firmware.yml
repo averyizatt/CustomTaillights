@@ -45,6 +45,8 @@ jobs:
             test/test_can_runtime/test_can_runtime.cpp src/canbus.cpp -o /tmp/can_runtime && /tmp/can_runtime
           g++ -std=c++17 -Wall -Wextra -Werror -DCUSTOM_TAILLIGHTS_PCB=1 -Itest/test_led_transport/stubs -Itest/test_can_runtime/stubs -Isrc -Iinclude \
             test/test_led_transport/test_led_transport.cpp src/led_transport.cpp -o /tmp/led_transport && /tmp/led_transport
+          g++ -std=c++17 -Wall -Wextra -Werror -DCUSTOM_TAILLIGHTS_PCB=1 -Itest/test_inputs/stubs -Isrc -Iinclude \
+            test/test_inputs/test_inputs.cpp src/inputs.cpp -o /tmp/inputs && /tmp/inputs
 
       # The build number the controller reports to the dash: the first eight hex digits of the commit.
       - name: Build

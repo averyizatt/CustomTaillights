@@ -44,6 +44,7 @@ private:
     struct Channel {
         int           pin;
         unsigned long debounceMs   = DEBOUNCE_MS;  // per-channel; set in begin()
+        unsigned long releaseMs    = 0;            // going inactive, if longer; 0 = debounceMs
         bool          state        = false;
         bool          lastRaw      = false;
         unsigned long lastChangeMs = 0;

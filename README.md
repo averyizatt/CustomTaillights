@@ -80,6 +80,9 @@ CustomTaillights/
 ## Light states
 
 Each side resolves its own `LightState` independently from its four debounced input channels.  
+The running-light input goes off only after it has been off for 1.5 s (`RUNNING_RELEASE_MS`),
+so a loose connection that drops out for a moment does not blink the lamps; brake, turn and
+reverse are not held.  
 Priority (highest → lowest): **HAZARD > BRAKE_TURN > BRAKE > TURN > REVERSE > RUNNING > OFF**
 
 | State | Description |

@@ -17,6 +17,10 @@ void Inputs::begin() {
     _channels[6].pin = PIN_PASSENGER_TURN;    _channels[6].debounceMs = DEBOUNCE_MS;      _channels[6].state = false; _channels[6].lastRaw = false; _channels[6].lastChangeMs = 0;
     _channels[7].pin = PIN_PASSENGER_REVERSE; _channels[7].debounceMs = DEBOUNCE_FAST_MS; _channels[7].state = false; _channels[7].lastRaw = false; _channels[7].lastChangeMs = 0;
 
+    // Running lights ride through brief dropouts of a loose connection.
+    _channels[1].releaseMs = RUNNING_RELEASE_MS;
+    _channels[5].releaseMs = RUNNING_RELEASE_MS;
+
     const uint8_t inputMode = OPT_ACTIVE_LEVEL == LOW ? INPUT_PULLUP : INPUT_PULLDOWN;
     for (auto& ch : _channels) {
         pinMode(ch.pin, inputMode);
@@ -79,7 +83,8 @@ bool IRAM_ATTR Inputs::_debounce(Channel& ch) {
         ch.lastChangeMs = nowMs;
     }
 
-    if ((nowMs - ch.lastChangeMs) >= ch.debounceMs && raw != ch.state) {
+    const unsigned long holdMs = (!raw && ch.releaseMs) ? ch.releaseMs : ch.debounceMs;
+    if ((nowMs - ch.lastChangeMs) >= holdMs && raw != ch.state) {
         ch.state = raw;
         return true;
     }
