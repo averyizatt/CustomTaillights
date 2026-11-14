@@ -25,6 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-tags: true
 
       - uses: actions/setup-python@v5
         with:
@@ -52,6 +54,10 @@ jobs:
       - name: Build
         run: |
           BUILD=$(git rev-parse HEAD | cut -c1-8)
+          # The system version (VERSION, shared by the dash and every module): exactly it on its
+          # release tag, with a + after it for a build that came later.
+          V=$(tr -cd '0-9.' < VERSION)
+          if git tag --points-at HEAD | grep -qx "v$V"; then echo "RELEASE=$V" >> "$GITHUB_ENV"; else echo "RELEASE=$V+" >> "$GITHUB_ENV"; fi
           echo "BUILD=$BUILD" >> "$GITHUB_ENV"
           PLATFORMIO_BUILD_FLAGS="-DTAILLIGHT_FW_BUILD=0x$BUILD" pio run -e esp32-s3-pcb
 
@@ -64,7 +70,8 @@ jobs:
           data = pathlib.Path('out/taillights-firmware.bin').read_bytes()
           assert 0 < len(data) <= 0x330000, len(data)   # Must fit one application slot.
           manifest = {'build': os.environ['BUILD'], 'size': len(data),
-                      'sha256': hashlib.sha256(data).hexdigest(), 'commit': os.environ['GITHUB_SHA']}
+                      'sha256': hashlib.sha256(data).hexdigest(), 'commit': os.environ['GITHUB_SHA'],
+                      'version': os.environ.get('RELEASE', '')}
           pathlib.Path('out/taillights-firmware.json').write_text(json.dumps(manifest) + '\n')
           print(manifest)
           EOF

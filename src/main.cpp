@@ -147,7 +147,8 @@ struct OtaFlash {
     bool confirm() { return esp_ota_mark_app_valid_cancel_rollback() == ESP_OK; }
 };
 static OtaFlash g_otaFlash;
-static fw::Receiver<OtaFlash> g_updater(fw::TARGET_TAILLIGHT, TAILLIGHT_FW_BUILD, g_otaFlash);
+// The ROM's decompressor: the dash sends compressed blocks (firmware_update.h version 2).
+static fw::Receiver<OtaFlash, fw::RomInflate> g_updater(fw::TARGET_TAILLIGHT, TAILLIGHT_FW_BUILD, g_otaFlash);
 static unsigned long g_restartAtMs = 0;
 // A new firmware the dash has not confirmed within this time is given up: the
 // controller restarts into the firmware it had before.
